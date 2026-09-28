@@ -620,9 +620,10 @@
     <button onclick="assistAsk('这个月 P&L')">P&amp;L</button>
     <button onclick="assistAsk('我们欠供应商多少')">欠供应商</button>
     <button onclick="assistAsk('哪些 overdue')">哪些 overdue</button>
+    <button onclick="assistAsk('What was last month sales?')">Last month sales</button>
   </div>
   <div class="assist-log" id="assist-log">
-    <div class="assist-msg bot">Ask about receivables, overdue, undelivered goods, goods received, sales or P&amp;L — or type any name, document number or item to find records. Numbers come straight from your records.</div>
+    <div class="assist-msg bot">Ask in English or 中文 about receivables, overdue, undelivered goods, goods received, sales or P&amp;L (this month or last month) — or type any name, document number or item to find records. I look things up in your records; I can't explain reasons or write messages.</div>
   </div>
   <div class="assist-input-row">
     <input id="assist-input" class="form-input" placeholder="问问题，或输入关键字找单据（例如：找 ABC Trading）" onkeydown="if(event.key==='Enter') assistSend()">
@@ -663,38 +664,88 @@ let numberingSettings = {
   jv:{label:'Journal Entry', prefix:'JV-', running:1, digits:3},
   cb:{label:'Cash Book Entry', prefix:'CB-', running:1, digits:3},
 };
-function generateDocNumber(type){
-  const s = numberingSettings[type];
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(-2);
-  const mm = String(now.getMonth()+1).padStart(2,'0');
-  return `${s.prefix}${yy}${mm}/${String(s.running).padStart(s.digits,'0')}`;
+function docYM(dateISO){
+  const d = /^\d{4}-\d{2}/.test(String(dateISO||'')) ? String(dateISO) : todayISO();
+  return d.slice(2,4) + d.slice(5,7);                       // 2026-09-30 -> "2609"
 }
-function updateNumberingPrefix(key, val){ numberingSettings[key].prefix = val; refreshNumberingPreview(key); }
-function updateNumberingRunning(key, val){ numberingSettings[key].running = parseInt(val)||0; refreshNumberingPreview(key); }
+function currentYM(){ return docYM(todayISO()); }
+// Every document type keeps a separate counter for each month: numberingSettings[type].counters = {"2609": 105, ...}
+// = the NEXT number to use in that month. A month that has no counter yet starts at the "start" number (101).
+function counterFor(type, ym){
+  const s = numberingSettings[type], st = s.start || 101;
+  if(s.counters && s.counters[ym]!==undefined) return s.counters[ym];
+  // settings saved before per-month counters existed
+  if(s.period){ if(s.period===ym) return s.running; }
+  else if(ym===currentYM() && s.running!=null && !(s.counters && Object.keys(s.counters).length)) return Math.max(s.running, st);
+  return st;
+}
+function setCounter(type, ym, val){ const s = numberingSettings[type]; s.counters = s.counters || {}; s.counters[ym] = val; }
+function effectiveRunning(type){ return counterFor(type, currentYM()); }     // this month's next number (settings page)
+function bumpNumber(type, dateISO){ const ym = docYM(dateISO); setCounter(type, ym, counterFor(type, ym) + 1); }
+function generateDocNumber(type, dateISO){
+  const s = numberingSettings[type], ym = docYM(dateISO);
+  return `${s.prefix}${ym}/${String(counterFor(type, ym)).padStart(s.digits,'0')}`;
+}
 function refreshNumberingPreview(key){
   const el = document.getElementById('preview-'+key);
   if(el) el.textContent = generateDocNumber(key);
 }
 function renderNumberingSettings(){
+  const typeOpts = Object.entries(numberingSettings).map(([k,x])=>`<option value="${k}">${x.label}</option>`).join('');
+  const used = [];
+  Object.entries(numberingSettings).forEach(([k,x])=>{ Object.keys(x.counters||{}).sort().forEach(ym=>{ used.push(`<tr><td>${x.label}</td><td class="cell-dim">20${ym.slice(0,2)}-${ym.slice(2)}</td><td class="cell-dim" style="font-family:ui-monospace,monospace">${x.prefix}${ym}/${String(x.counters[ym]).padStart(x.digits,'0')}</td></tr>`); }); });
   return `
     <div class="panel">
       <div class="panel-head"><p class="panel-title">Document Numbering</p></div>
       <table>
-        <thead><tr><th>Document Type</th><th>Prefix</th><th>Next Running No.</th><th>Next Number Preview</th></tr></thead>
+        <thead><tr><th>Document Type</th><th>Prefix</th><th>Starts each month at</th><th>Next number (this month)</th><th>Next Number Preview</th></tr></thead>
         <tbody>
           ${Object.entries(numberingSettings).map(([key,s])=>`
             <tr>
               <td class="cell-strong">${s.label}</td>
               <td><input class="form-input numbering-input" value="${s.prefix}" oninput="updateNumberingPrefix('${key}', this.value)"></td>
-              <td><input type="number" class="form-input numbering-input" value="${s.running}" oninput="updateNumberingRunning('${key}', this.value)"></td>
+              <td><input type="number" class="form-input numbering-input" value="${s.start||101}" oninput="updateNumberingStart('${key}', this.value)"></td>
+              <td><input type="number" id="run-${key}" class="form-input numbering-input" value="${effectiveRunning(key)}" oninput="updateNumberingRunning('${key}', this.value)"></td>
               <td class="cell-dim" id="preview-${key}" style="font-family:ui-monospace,monospace;">${generateDocNumber(key)}</td>
             </tr>`).join('')}
         </tbody>
       </table>
     </div>
-    <p class="section-note">Format: Prefix + Year(YY) + Month(MM) + running number. Quotation is wired to auto-fill and auto-increment now — the rest will follow as each create-form is built.</p>
+    <p class="section-note">Number = Prefix + Year &amp; Month (YYMM) + “/” + running number, e.g. <b>CS-${currentYM()}/101</b>. <b>The year and month come from the date written on the document</b>, so a bill dated 30 Sep that you key in on 2 Oct is numbered 2609/…, continuing September's series. <b>Each month has its own running number, starting at “Starts each month at” (101)</b>, and every document you save adds 1 to the month it belongs to.</p>
+    <div class="panel">
+      <div class="panel-head"><p class="panel-title">Set the next number for another month</p></div>
+      <div class="form-body">
+        <p class="section-note" style="padding:0 0 8px">Use this if you already issued numbers for a month elsewhere and want to carry on from them — for example September already reached 130, so the next is 131.</p>
+        <div class="form-grid three">
+          <div class="form-field"><label>Document type</label><select id="nm-type" class="form-input">${typeOpts}</select></div>
+          <div class="form-field"><label>Month</label><input id="nm-month" type="month" class="form-input" value="${todayISO().slice(0,7)}"></div>
+          <div class="form-field"><label>Next number</label><input id="nm-next" type="number" class="form-input" placeholder="e.g. 131"></div>
+        </div>
+        <div class="form-actions"><button class="save-btn" onclick="numSetMonthly()">Set</button></div>
+      </div>
+      ${used.length ? `<table><thead><tr><th>Document type</th><th>Month</th><th>Next number</th></tr></thead><tbody>${used.join('')}</tbody></table>` : ''}
+    </div>
   `;
+}
+function numSetMonthly(){
+  const type = document.getElementById('nm-type').value;
+  const month = document.getElementById('nm-month').value;
+  const n = parseInt(document.getElementById('nm-next').value,10);
+  if(!month || isNaN(n) || n<0){ alert('Please choose the month and enter the next number.'); return; }
+  setCounter(type, docYM(month+'-01'), n);
+  render('numbering');
+}
+function updateNumberingPrefix(key, val){ numberingSettings[key].prefix = val; refreshNumberingPreview(key); }
+function updateNumberingStart(key, val){
+  const n = parseInt(val,10); if(isNaN(n) || n<0) return;
+  numberingSettings[key].start = n;
+  const r = document.getElementById('run-'+key); if(r) r.value = effectiveRunning(key);
+  refreshNumberingPreview(key);
+}
+function updateNumberingRunning(key, val){
+  const n = parseInt(val,10); if(isNaN(n)) return;
+  setCounter(key, currentYM(), n);
+  refreshNumberingPreview(key);
 }
 
 // ---------- Customer master data ----------
@@ -767,8 +818,8 @@ function isSameMonth(dateStr, ref){
   const d = new Date(dateStr);
   return !isNaN(d) && d.getFullYear()===ref.getFullYear() && d.getMonth()===ref.getMonth();
 }
-function computeMonthMetrics(){
-  const now = new Date();
+function computeMonthMetrics(ref){
+  const now = ref || new Date();
   const quotesThisMonth = quoteRows.filter(q=>isSameMonth(q.date, now));
   const quotesValue = quotesThisMonth.reduce((s,q)=>s+q.amt,0);
   const invoicesThisMonth = invoiceRows.filter(iv=>isSameMonth(iv.date, now));
@@ -807,7 +858,8 @@ function searchAll(text){
   const cleaned = text.toLowerCase()
     .replace(/帮我|请问|请|找一下|找找|找|查一下|查找|查询|查|搜索|搜|有没有|有关|关于|哪一张|哪张|哪些|的单|的|吗|呢/g,' ')
     .replace(/\b(search for|search|find me|find|look up|lookup|show me|please|for)\b/g,' ');
-  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  const STOP = ['the','a','an','of','for','to','with','about','all','show','list','me','us','my','our','any','from','in','on','and','record','records','document','documents','related','please','is','are','was'];
+  const tokens = cleaned.split(/\s+/).filter(Boolean).filter(t=>!STOP.includes(t)).map(t=>(t.length>3 && t.endsWith('s') && !t.endsWith('ss')) ? t.slice(0,-1) : t);
   if(!tokens.length) return null;
   const recs = [];
   const add = (type,num,party,date,amt,extra)=> recs.push({type,num:num||'',party:party||'',date:date||'',amt,
@@ -841,16 +893,22 @@ function searchAll(text){
 function answerQuestion(text){
   const q = text.toLowerCase();
   const has = (...ks) => ks.some(k=>q.includes(k));
-  const m = computeMonthMetrics();
-  const monthName = new Date().toLocaleString('en-US',{month:'long', year:'numeric'});
-  const wantsSupplier = has('供应商','supplier','payable','应付','我们欠','欠他');
-  const wantsCustomer = has('顾客','客户','customer');
+  const re = r => r.test(q);
+  const explicitSearch = has('找','查','搜','search','find','look up','lookup','哪一张','哪张');
+  const lastMonth = has('last month','previous month','上个月','上月');
+  const ref = new Date(); if(lastMonth) ref.setMonth(ref.getMonth()-1, 1);
+  const m = computeMonthMetrics(ref);
+  const monthName = ref.toLocaleString('en-US',{month:'long', year:'numeric'});
+  const wantsSupplier = has('供应商','supplier','vendor','payable','应付','我们欠','欠他','creditor') || re(/\bwe owe\b/);
+  const wantsCustomer = has('顾客','客户','customer','debtor');
+  const goodsWord = has('goods','item','stock','material','product','parts','equipment','supplies');
 
-  if(has('找','查','搜','search','find','look up','lookup','哪一张','哪张')){
-    const r = searchAll(text);
-    if(r) return r.html;
+  if(explicitSearch){ const r = searchAll(text); if(r && r.count>0) return r.html; }
+
+  if(re(/\b(why|explain|draft|write|compose|e-?mail|forecast|predict|recommend|suggest|advice|analy[sz]e)\b/) || has('为什么','为何','帮我写','写一封','建议','预测','分析','解释')){
+    return `I can look up <b>figures</b> and <b>find records</b> in your system, but I can't explain reasons, write messages or give advice.<br>Try: “how much do customers owe us?”, “which invoices are overdue?”, “what is our profit this month?”, or search a name or document number.`;
   }
-  if(has('overdue','逾期','过期','超期','到期')){
+  if(has('overdue','逾期','过期','超期','到期','past due','late payment')){
     const inv = (wantsSupplier && !wantsCustomer) ? [] : invoiceRows.filter(x=>isOverdue(x,'inv'));
     const pis = (wantsCustomer && !wantsSupplier) ? [] : piRows.filter(x=>isOverdue(x,'pi'));
     if(!inv.length && !pis.length) return 'Nothing is overdue right now.';
@@ -865,27 +923,15 @@ function answerQuestion(text){
     }
     return html + '<div class="assist-note">Overdue = invoice date + the credit term (days) set in the customer / supplier record.</div>';
   }
-  if(wantsSupplier){
-    const rows = groupOutstanding(piRows,'supplier','pi');
-    if(!rows.length) return 'No outstanding balance to suppliers.';
-    return `<b>We owe suppliers RM ${fmt2(m.totalAP)}</b>` + assistTable(['Supplier','Outstanding (RM)'], rows.map(r=>[r.name, fmt2(r.total)]));
-  }
-  if(has('bank balance','银行','余额','现金','cash balance','bank 有多少')){
+  if(has('bank balance','银行','余额','现金','cash balance','how much cash','money in the bank','cash in bank')){
     const tot = accountTotals();
     let all = 0;
     const rows = bankAccounts().map(a=>{ const t=tot[a.code]||{dr:0,cr:0}; all += t.dr-t.cr; return [accountLabel(a.code), fmt2(t.dr-t.cr)]; });
     if(rows.length>1) rows.push(['<b>All bank / cash</b>', '<b>'+fmt2(all)+'</b>']);
     return '<b>Bank / cash balance per books</b>' + assistTable(['Account','Balance (RM)'], rows) + '<div class="assist-note">This is the book balance. Use Bank Reconciliation to match it to the bank statement.</div>';
   }
-  if(has('p&l','pnl','利润','profit','盈亏','赚')){
-    return `<b>${monthName} (gross)</b>` + assistTable(['',''], [
-      ['Sales (invoices this month)', 'RM '+fmt2(m.salesThisMonth)],
-      ['Cost of goods (purchase invoices this month)', 'RM '+fmt2(m.cogsThisMonth)],
-      ['<b>Gross profit</b>', '<b>RM '+fmt2(m.grossProfit)+'</b>'],
-      ['Gross margin', m.margin.toFixed(1)+'%'],
-    ]) + '<div class="assist-note">Operating expenses (rent, salaries, etc.) are not recorded in the system yet, so this is gross profit, not net profit.</div>';
-  }
-  if(has('还没出','没出','未出','没送','没交','undelivered','not delivered','not yet deliver','pending delivery')){
+  if(has('还没出','没出','未出','没送','没交','undelivered','not delivered','not yet deliver','pending delivery','yet to deliver','yet to ship','not shipped','to be delivered','outstanding deliver')
+     || re(/\b(not|n't|never|yet to)\s+(yet\s+)?(been\s+)?(delivered|shipped|sent out)\b/) || re(/\b(haven't|hasn't|have not|has not|didn't|did not)\s+(we\s+)?(yet\s+)?(delivered|shipped|deliver|ship)\b/)){
     const rows = quoteRows.filter(x=>x.outcome==='won' && x.stage!=='delivered');
     if(!rows.length) return 'All won orders have been delivered.';
     return `<b>${rows.length} order(s) not yet delivered</b>` + assistTable(['Quote','Customer','Amount (RM)','Where it stands'], rows.map(x=>[x.num, x.client, fmt(x.amt), flowStageLabels[x.stage]||x.stage]));
@@ -895,28 +941,49 @@ function answerQuestion(text){
     if(!rows.length) return 'No deposits recorded yet.';
     return `<b>Deposits received: RM ${fmt2(rows.reduce((t,o)=>t+o.amt,0))}</b>` + assistTable(['OR','Customer','Date','Amount (RM)'], rows.map(o=>[o.num, o.client, fmtDate(o.date), fmt2(o.amt)]));
   }
-  if(has('拿了','收货','收到','收了','到货','进货','received','goods in','拿什么货','拿货')){
-    const rows = grRows.filter(g=>isSameMonth(g.date, new Date()));
+  if(has('拿了','收货','收到','收了','到货','进货','拿什么货','拿货','goods received','goods in','received goods','what did we buy','what we bought','what have we bought')
+     || (re(/\b(receive|received|receiving|arrived|came in|get|got)\b/) && goodsWord)){
+    const rows = grRows.filter(g=>isSameMonth(g.date, ref));
     if(!rows.length) return `No goods received recorded in ${monthName}.`;
     return `<b>Goods received in ${monthName}</b>` + assistTable(['GR','Supplier','Date','Items','Amount (RM)'], rows.map(g=>[g.num, g.supplier, fmtDate(g.date), g.items, g.amt!=null?fmt2(g.amt):'-']));
   }
-  if(has('sales','销售','营业额','卖了','开票','invoiced','业绩')){
+  if(has('收款','收了多少','收到多少','payments received','receipts') || re(/\bcollect(ed|ion|ions)?\b/) || re(/\bhow much (did|have) we (receive|received|get|got)\b/)){
+    const rows = orRows.filter(o=>isSameMonth(o.date, ref));
+    if(!rows.length) return `No receipts recorded in ${monthName}.`;
+    return `<b>Received from customers in ${monthName}: RM ${fmt2(rows.reduce((t,o)=>t+o.amt,0))}</b>` + assistTable(['OR','Customer','Date','Amount (RM)'], rows.map(o=>[o.num, o.client, fmtDate(o.date), fmt2(o.amt)]));
+  }
+  if(has('p&l','pnl','利润','profit','盈亏','赚','margin','net income') || re(/\bloss\b/)){
+    return `<b>${monthName} (gross)</b>` + assistTable(['',''], [
+      ['Sales (invoices in the month)', 'RM '+fmt2(m.salesThisMonth)],
+      ['Cost of goods (purchase invoices in the month)', 'RM '+fmt2(m.cogsThisMonth)],
+      ['<b>Gross profit</b>', '<b>RM '+fmt2(m.grossProfit)+'</b>'],
+      ['Gross margin', m.margin.toFixed(1)+'%'],
+    ]) + '<div class="assist-note">This is gross profit. For the full Profit &amp; Loss with expenses, open Financial Reports.</div>';
+  }
+  if(has('sales','销售','营业额','卖了','开票','invoiced','业绩','revenue','turnover') || re(/\bsold\b/) || re(/\bhow much (did|have) we sell\b/)){
     return `<b>${monthName} sales: RM ${fmt2(m.salesThisMonth)}</b> from ${m.invoicesThisMonth.length} invoice(s).` +
       (m.invoicesThisMonth.length ? assistTable(['Invoice','Customer','Amount (RM)'], m.invoicesThisMonth.map(iv=>[iv.num, iv.client, fmt2(iv.amt)])) : '');
+  }
+  if(wantsSupplier){
+    const rows = groupOutstanding(piRows,'supplier','pi');
+    if(!rows.length) return 'No outstanding balance to suppliers.';
+    return `<b>We owe suppliers RM ${fmt2(m.totalAP)}</b>` + assistTable(['Supplier','Outstanding (RM)'], rows.map(r=>[r.name, fmt2(r.total)]));
   }
   if(has('报价','quotation','quote')){
     const rows = m.pendingQuotes;
     if(!rows.length) return 'No quotations waiting for a decision.';
     return `<b>${rows.length} quotation(s) pending decision</b>` + assistTable(['Quote','Customer','Amount (RM)'], rows.map(x=>[x.num, x.client, fmt(x.amt)]));
   }
-  if(wantsCustomer || has('还有多少','没还','还没还','欠','receivable','应收','outstanding','owe','未收')){
+  if(wantsCustomer || has('还有多少','没还','还没还','欠','receivable','应收','outstanding','owe','未收','unpaid','not paid','yet to pay')
+     || re(/\b(hasn't|haven't|has not|have not|didn't|did not)\s+(yet\s+)?paid\b/)){
     const rows = groupOutstanding(invoiceRows,'client','inv');
     if(!rows.length) return 'No customer owes us anything.';
     return `<b>Customers owe us RM ${fmt2(m.totalAR)}</b>` + assistTable(['Customer','Outstanding (RM)'], rows.map(r=>[r.name, fmt2(r.total)]));
   }
   const r = searchAll(text);
   if(r && r.count>0) return r.html;
-  return `I couldn't match that. I can:<br>• Answer: 顾客还有多少钱没还 / 什么货还没出 / 这个月收了什么货 / sales / P&L / 欠供应商多少 / 哪些 overdue / deposit<br>• Search your records: “找 ABC Trading” , “IV-2609/001” , “gearmotor” , a phone number, a TIN…`;
+  if(explicitSearch && r) return r.html;
+  return `I couldn't match that. I can answer (in English or 中文):<br>• Who owes us / 顾客还有多少钱没还<br>• Which orders are not delivered / 什么货还没出<br>• Goods received this month / 这个月收了什么货<br>• Sales, profit — this month or <b>last month</b> / 这个月、上个月<br>• How much we owe suppliers / 欠供应商多少<br>• What is overdue / 哪些 overdue<br>• Bank balance, deposits, pending quotations<br>• <b>Search</b> your records: a name, document number, item, phone number…`;
 }
 function toggleAssist(){
   const p = document.getElementById('assist-panel');
@@ -1133,7 +1200,7 @@ function openSOFormFromFlow(quoteNum){
   const today = new Date().toISOString().slice(0,10);
   const header = `
     <div class="form-grid">
-      <div class="form-field"><label>SO Number</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+      <div class="form-field"><label>SO Number</label><input id="f-num" class="form-input" value="${num}" readonly data-numtype="so"></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
     </div>
     <div class="form-grid">
@@ -1155,7 +1222,7 @@ function saveSOFromFlow(quoteNum){
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
   const itemsSummary = items.map(it=>`${it.desc} x${it.qty}`).join(', ');
   soRows.unshift({num, client:q.client, date, amt, items:itemsSummary, status:'Confirmed', itemsFull:items, addr:q.addr, attn:q.attn, refQuotation:q.num});
-  numberingSettings.so.running += 1;
+  bumpNumber('so', date);
   q.soNum = num;
   q.stage = customerPaymentPolicy(q.client)==='Deposit Required' ? 'proforma' : 'po';
   generateSOPDF({num, client:q.client, date, addr:q.addr, attn:q.attn, items, refQuotation:q.num});
@@ -1761,7 +1828,7 @@ function openCashBookForm(type, editIdx){
       </div>
       <div class="form-body">
         <div class="form-grid">
-          <div class="form-field"><label>Entry No.</label><input id="cb-no" class="form-input" value="${no}" readonly></div>
+          <div class="form-field"><label>Entry No.</label><input id="cb-no" class="form-input" value="${no}" readonly ${editing?'':'data-numtype="cb"'}></div>
           <div class="form-field"><label>Date</label><input id="cb-date" type="date" class="form-input" value="${editing?editing.date:todayISO()}"></div>
         </div>
         <div class="form-grid">
@@ -1803,7 +1870,7 @@ function saveCashBook(editIdx){
   if(amt<=0){ alert('Please enter the amount.'); return; }
   const rec = {no, date, type, bank, contra, amt, ref:document.getElementById('cb-ref').value.trim(), desc:document.getElementById('cb-desc').value.trim() || (type==='Receipt'?'Receipt':'Payment')};
   if(editing){ cashBookRows[editIdx] = rec; }
-  else { cashBookRows.push(rec); numberingSettings.cb.running += 1; }
+  else { cashBookRows.push(rec); bumpNumber('cb', date); }
   cbAccount = bank;
   render('cashbook');
 }
@@ -1857,7 +1924,7 @@ function openJournalForm(editIdx){
       </div>
       <div class="form-body">
         <div class="form-grid">
-          <div class="form-field"><label>Journal No.</label><input id="jv-no" class="form-input" value="${editing?editing.no:generateDocNumber('jv')}" readonly></div>
+          <div class="form-field"><label>Journal No.</label><input id="jv-no" class="form-input" value="${editing?editing.no:generateDocNumber('jv')}" readonly ${editing?'':'data-numtype="jv"'}></div>
           <div class="form-field"><label>Date</label><input id="jv-date" type="date" class="form-input" value="${editing?editing.date:todayISO()}"></div>
         </div>
         <div class="form-field full"><label>Description</label><input id="jv-desc" class="form-input" value="${editing?escapeAttr(editing.desc):''}" placeholder="e.g. Initial share capital subscription RM100 (auditor adjustment)"></div>
@@ -1913,7 +1980,7 @@ function saveJournal(editIdx){
   if(Math.abs(d-c)>=0.005){ alert(`Debit RM ${fmt2(d)} and credit RM ${fmt2(c)} must be equal.`); return; }
   const rec = {no, date, desc, lines:lines.map(l=>({acct:l.acct, memo:l.memo||'', dr:l.dr||0, cr:l.cr||0}))};
   if(editing){ journals[editIdx] = rec; }
-  else { journals.push(rec); numberingSettings.jv.running += 1; }
+  else { journals.push(rec); bumpNumber('jv', date); }
   render('journal');
 }
 function deleteJournal(i){
@@ -2453,6 +2520,12 @@ function downloadReportPDF(){
   doc.save(`${safeFileName(rptTitle().replace(/[^A-Za-z]+/g,'_'))}_${rpt.to}.pdf`);
 }
 
+document.addEventListener('change', e=>{
+  const t = e.target;
+  if(!t || !['f-date','cb-date','jv-date'].includes(t.id) || !t.value) return;
+  document.querySelectorAll('#content [data-numtype]').forEach(el=>{ el.value = generateDocNumber(el.dataset.numtype, t.value); });
+});
+
 // ---------- Searchable dropdown: type a few letters to filter ----------
 const comboData = {};
 function escapeAttr(x){ return String(x).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
@@ -2688,7 +2761,7 @@ function openORForm(prefill){
       </div>
       <div class="form-body">
         <div class="form-grid">
-          <div class="form-field"><label>OR Number</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+          <div class="form-field"><label>OR Number</label><input id="f-num" class="form-input" value="${num}" readonly ${editing?'':'data-numtype="or"'}></div>
           <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
         </div>
         <div class="form-field full"><label>Receipt Type</label>
@@ -2758,7 +2831,7 @@ function openProformaFormFromFlow(quoteNum, purpose){
   currentFormItems = [{desc:suggestedDesc, qty:1, price:suggested}];
   const header = `
     <div class="form-grid">
-      <div class="form-field"><label>P.I. No.</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+      <div class="form-field"><label>P.I. No.</label><input id="f-num" class="form-input" value="${num}" readonly data-numtype="proforma"></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
     </div>
     <div class="form-grid">
@@ -2781,7 +2854,7 @@ function saveProformaFromFlow(quoteNum){
   const amount = items.reduce((s,it)=>s+it.qty*it.price,0);
   const description = items.map(it=>it.desc).join(', ');
   proformaRows.unshift({num, client:q.client, date, amt:amount, description, itemsFull:items, addr:q.addr, attn:q.attn, refSO:q.soNum||q.num, refQuotation:q.num});
-  numberingSettings.proforma.running += 1;
+  bumpNumber('proforma', date);
   q.proformaNum = num;
   q.proformaAmt = amount;
   q.proformaDesc = description;
@@ -2919,7 +2992,7 @@ function saveOR(backView, editIdx){
   }
   rec.chqNo = document.getElementById('f-or-chq').value.trim();
   if(editing){ orRows[editIdx] = {...editing, ...rec}; }
-  else { orRows.unshift(rec); numberingSettings.or.running += 1; }
+  else { orRows.unshift(rec); bumpNumber('or', date); }
   render(backView || 'or');
 }
 
@@ -2962,7 +3035,7 @@ function openPVForm(editIdx){
       </div>
       <div class="form-body">
         <div class="form-grid">
-          <div class="form-field"><label>PV Number</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+          <div class="form-field"><label>PV Number</label><input id="f-num" class="form-input" value="${num}" readonly ${editing?'':'data-numtype="pv"'}></div>
           <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
         </div>
         ${allocBlockHTML('pv', sup?sup.id:'')}
@@ -3011,7 +3084,7 @@ function savePV(editIdx){
   const rec = {num, supplier, date, amt:amount, method, bankAcct, allocations, refPI:allocations.map(x=>x.pi).join(', ')};
   rec.chqNo = document.getElementById('f-pv-chq').value.trim();
   if(editing){ pvRows[editIdx] = {...editing, ...rec}; }
-  else { pvRows.unshift(rec); numberingSettings.pv.running += 1; }
+  else { pvRows.unshift(rec); bumpNumber('pv', date); }
   render('pv');
 }
 
@@ -3025,7 +3098,7 @@ function openPOFormFromFlow(quoteNum){
   const today = new Date().toISOString().slice(0,10);
   const header = `
     <div class="form-grid">
-      <div class="form-field"><label>PO Number</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+      <div class="form-field"><label>PO Number</label><input id="f-num" class="form-input" value="${num}" readonly data-numtype="po"></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
     </div>
     <div class="form-grid">
@@ -3052,7 +3125,7 @@ function savePOFromFlow(quoteNum){
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
   poRows.unshift({num, supplier:supplier.name, date, amt, status:'Open', itemsFull:items, addr:supplier.addr, attn:supplier.attn, refSO:q.soNum||q.num});
-  numberingSettings.po.running += 1;
+  bumpNumber('po', date);
   q.poNum = num;
   q.poSupplier = supplier.name;
   q.stage = 'gr';
@@ -3071,7 +3144,7 @@ function openGRFormFromFlow(quoteNum){
   const today = new Date().toISOString().slice(0,10);
   const header = `
     <div class="form-grid">
-      <div class="form-field"><label>GR Number</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+      <div class="form-field"><label>GR Number</label><input id="f-num" class="form-input" value="${num}" readonly data-numtype="gr"></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
     </div>
     <div class="form-grid">
@@ -3095,7 +3168,7 @@ function saveGRFromFlow(quoteNum){
   const supplierObj = suppliers.find(s=>s.name===q.poSupplier);
   const grAmt = items.reduce((s,it)=>s+it.qty*it.price,0);
   grRows.unshift({num, supplier:q.poSupplier||'-', date, items:itemsSummary, amt:grAmt, status:'Complete', itemsFull:items, refPO:q.poNum});
-  numberingSettings.gr.running += 1;
+  bumpNumber('gr', date);
   q.grNum = num;
   q.stage = 'delivery';
   generateGRPDF({num, supplier:q.poSupplier||'-', date, addr:supplierObj?supplierObj.addr:[], items, refPO:q.poNum});
@@ -3112,8 +3185,8 @@ function openDeliveryFormFromFlow(quoteNum){
   const today = new Date().toISOString().slice(0,10);
   const header = `
     <div class="form-grid">
-      <div class="form-field"><label>DO Number</label><input id="f-do-num" class="form-input" value="${doNum}" readonly></div>
-      <div class="form-field"><label>Invoice Number</label><input id="f-inv-num" class="form-input" value="${invNum}" readonly></div>
+      <div class="form-field"><label>DO Number</label><input id="f-do-num" class="form-input" value="${doNum}" readonly data-numtype="do"></div>
+      <div class="form-field"><label>Invoice Number</label><input id="f-inv-num" class="form-input" value="${invNum}" readonly data-numtype="invoice"></div>
     </div>
     <div class="form-grid">
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
@@ -3141,8 +3214,8 @@ function saveDeliveryFromFlow(quoteNum){
   const status = paidAmt >= amt - 0.005 ? 'Paid' : (paidAmt > 0 ? 'Partial Payment' : 'Open');
   doRows.unshift({num:doNum, client:q.client, date, items:itemsSummary, status:'Delivered', itemsFull:items, addr:q.addr, refSO:q.soNum||q.num});
   invoiceRows.unshift({num:invNum, client:q.client, date, amt, status, itemsFull:items, addr:q.addr, refDO:doNum, refProforma:q.proformaNum, terms, paidAmt, depositApplied});
-  numberingSettings.do.running += 1;
-  numberingSettings.invoice.running += 1;
+  bumpNumber('do', date);
+  bumpNumber('invoice', date);
   q.doNum = doNum;
   q.invNum = invNum;
   q.stage = 'delivered';
@@ -3601,7 +3674,7 @@ function quotationFormHTML(num, existing){
       </div>
       <div class="form-body">
         <div class="form-grid">
-          <div class="form-field"><label>Quotation No.</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+          <div class="form-field"><label>Quotation No.</label><input id="f-num" class="form-input" value="${num}" readonly ${existing?'':'data-numtype="quotation"'}></div>
           <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
         </div>
         <div class="form-grid">
@@ -3693,7 +3766,7 @@ function saveQuotation(){
     outcome:'pending', stage:'quotation',
     addr, attn, terms, preparedBy, preparedPhone, preparedEmail, itemsFull: items};
   quoteRows.unshift(q);
-  numberingSettings.quotation.running += 1;
+  bumpNumber('quotation', date);
   generateQuotationPDF({num, date, client: customer.name, addr, attn, items, terms, preparedBy, preparedPhone, preparedEmail});
   render('quotation');
 }
@@ -4371,7 +4444,7 @@ function openPurchaseNoteForm(piIdx, type){
   currentFormItems = [{desc:`Adjustment for ${pi.num}`, qty:1, price:0}];
   const header = `
     <div class="form-grid">
-      <div class="form-field"><label>${type==='CN'?'Credit':'Debit'} Note No.</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+      <div class="form-field"><label>${type==='CN'?'Credit':'Debit'} Note No.</label><input id="f-num" class="form-input" value="${num}" readonly data-numtype="${type==='CN'?'pcn':'pdn'}"></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
     </div>
     <div class="form-grid">
@@ -4396,7 +4469,7 @@ function savePurchaseNote(piIdx, type){
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
   purchaseNotes.unshift({num, type, supplier:pi.supplier, date, amt, reason, itemsFull:items, addr:pi.addr, refPI:pi.num});
   recalcStatus(pi,'pi');
-  numberingSettings[type==='CN'?'pcn':'pdn'].running += 1;
+  bumpNumber(type==='CN'?'pcn':'pdn', date);
   generatePurchaseNotePDF({num, type, supplier:pi.supplier, date, addr:pi.addr, items, reason, refPI:pi.num});
   render('pi');
 }
@@ -4461,7 +4534,7 @@ function openSalesNoteForm(invIdx, type){
   currentFormItems = [{desc:`Adjustment for ${inv.num}`, qty:1, price:0}];
   const header = `
     <div class="form-grid">
-      <div class="form-field"><label>${type==='CN'?'Credit':'Debit'} Note No.</label><input id="f-num" class="form-input" value="${num}" readonly></div>
+      <div class="form-field"><label>${type==='CN'?'Credit':'Debit'} Note No.</label><input id="f-num" class="form-input" value="${num}" readonly data-numtype="${type==='CN'?'cn':'dn'}"></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
     </div>
     <div class="form-grid">
@@ -4484,7 +4557,7 @@ function saveSalesNote(invIdx, type){
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
   salesNotes.unshift({num, type, client:inv.client, date, amt, reason, itemsFull:items, addr:inv.addr, refInvoice:inv.num});
-  numberingSettings[type==='CN'?'cn':'dn'].running += 1;
+  bumpNumber(type==='CN'?'cn':'dn', date);
   recalcStatus(inv,'inv');
   generateSalesNotePDF({num, type, client:inv.client, date, addr:inv.addr, items, reason, refInvoice:inv.num});
   render('invoice');
