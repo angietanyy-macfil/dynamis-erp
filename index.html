@@ -512,7 +512,7 @@
     <div class="nav-item" data-view="so">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 2h9l5 5v15H6z" stroke="currentColor" stroke-width="2"/></svg>
       Sales Order
-      <span class="nav-badge">6</span>
+      <span class="nav-badge" id="so-badge" style="display:none" title="Orders won but not delivered yet"></span>
     </div>
     <div class="nav-item" data-view="do">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="2" y="8" width="13" height="9" stroke="currentColor" stroke-width="2"/><path d="M15 11h4l3 3v3h-7z" stroke="currentColor" stroke-width="2"/></svg>
@@ -625,7 +625,7 @@
     <div class="assist-msg bot">Ask about receivables, overdue, undelivered goods, goods received, sales or P&amp;L — or type any name, document number or item to find records. Numbers come straight from your records.</div>
   </div>
   <div class="assist-input-row">
-    <input id="assist-input" class="form-input" placeholder="问问题，或输入关键字找单据（例如：找 Kia Lim）" onkeydown="if(event.key==='Enter') assistSend()">
+    <input id="assist-input" class="form-input" placeholder="问问题，或输入关键字找单据（例如：找 ABC Trading）" onkeydown="if(event.key==='Enter') assistSend()">
     <button class="save-btn" onclick="assistSend()">Ask</button>
   </div>
 </div>
@@ -698,114 +698,28 @@ function renderNumberingSettings(){
 }
 
 // ---------- Customer master data ----------
-let customers = [
-  {id:'CUST-001', name:'Syarikat Kia Lim Kilang Batu Bata Sdn Bhd',
-    addr:['Batu 1 1/4, Jalan Kangkar Senangar','Off Jalan Muar','83500 Parit Sulong, Batu Pahat, Johor'],
-    attn:'Cs Yap', phone:'07-418 6668', email:'', terms:'60 Days', termDays:60, agent:'Yap CS', creditLimit:30000, paymentPolicy:'Credit Term'},
-  {id:'CUST-002', name:'KWS Automation & Marketing',
-    addr:['No 18 Jalan Belati 1','Off Jalan Kempas Lama','Taman Perindustrian Maju Jaya','81300 Johor Bahru'],
-    attn:'Ms Fang @ 016-737 3113', phone:'016-737 3113', email:'', terms:'COD', termDays:0, agent:'Yap CS', creditLimit:15000, paymentPolicy:'Cash Before Delivery'},
-  {id:'CUST-003', name:'Petro Rubber Sdn Bhd',
-    addr:['Lot 22, Jalan Perusahaan 3','Kawasan Perindustrian Nilai','71800 Nilai, Negeri Sembilan'],
-    attn:'Mr Tan @ 012-345 6789', phone:'012-345 6789', email:'', terms:'30 Days', termDays:30, agent:'Yap CS', creditLimit:20000, paymentPolicy:'Deposit Required'},
-];
+let customers = [];
 let editingCustomerIndex = null;
 
 // ---------- Supplier master data ----------
-let suppliers = [
-  {id:'SUPP-001', name:'Macfil Sdn Bhd',
-    addr:[],
-    attn:'Ms Sim / Ms Angie', phone:'-', email:'', terms:'30 Days', termDays:30, agent:'Yap CS'},
-];
+let suppliers = [];
 let editingSupplierIndex = null;
 
 // ---------- Sales Order data ----------
-let soRows = [
-  {num:'SO-2608-006', client:'Syarikat Kia Lim', date:'2026-08-04', amt:12500, items:'Gearmotor R37 + brake disc', status:'Received'},
-  {num:'SO-2608-005', client:'KWS Automation', date:'2026-08-02', amt:8230, items:'Helical gear unit R77/A ×2', status:'Received'},
-  {num:'SO-2607-004', client:'Syarikat Kia Lim', date:'2026-07-28', amt:6200, items:'Gearmotor DR2S80MK4', status:'In progress'},
-  {num:'SO-2607-003', client:'KWS Automation', date:'2026-07-20', amt:9800, items:'Helical gearmotor R77DRN100LS4', status:'Received'},
-  {num:'SO-2607-002', client:'Syarikat Kia Lim', date:'2026-07-15', amt:5100, items:'Brake disc cpl BE11A', status:'Received'},
-  {num:'SO-2606-001', client:'Syarikat Kia Lim', date:'2026-06-30', amt:3570, items:'Spare parts, misc', status:'Received'},
-];
+let soRows = [];
 
 // ---------- Quotation data ----------
 // outcome: 'pending' | 'won' | 'lost' | 'declined'
 // stage (only meaningful when outcome==='won'): 'so' -> 'po' -> 'gr' -> 'delivery' -> 'delivered'
-let quoteRows = [
-  {num:'CS-2608011', client:'KWS Automation & Marketing', date:'2026-08-05', amt:8230, items:'Helical gear unit R77/A x2', status:'Sent',
-    outcome:'pending', stage:'quotation',
-    addr:['No 18 Jalan Belati 1','Off Jalan Kempas Lama','Taman Perindustrian Maju Jaya','81300 Johor Bahru'],
-    attn:'Ms Fang @ 016-737 3113',
-    itemsFull:[{desc:'Helical gear unit R77/A', qty:2, price:4115.00}],
-    terms:'1. Price validity: 30 days from the quotation date\n2. Delivery: 2-4 weeks\n3. Payment Terms: COD',
-    preparedBy:'Yap CS', preparedPhone:'+6016-695 5404', preparedEmail:'dynamis.solutions@outlook.com'},
-  {num:'CS-2608010', client:'Petro Rubber Sdn Bhd', date:'2026-08-03', amt:14200, items:'Gearmotor set, 3 units', status:'Sent',
-    outcome:'pending', stage:'quotation',
-    addr:['Lot 22, Jalan Perusahaan 3','Kawasan Perindustrian Nilai','71800 Nilai, Negeri Sembilan'],
-    attn:'Mr Tan @ 012-345 6789',
-    itemsFull:[{desc:'Helical gearmotor, assorted', qty:3, price:4733.33}],
-    terms:'1. Price validity: 30 days from the quotation date\n2. Delivery: 2-4 weeks\n3. Payment Terms: COD',
-    preparedBy:'Yap CS', preparedPhone:'+6016-695 5404', preparedEmail:'dynamis.solutions@outlook.com'},
-  {num:'CS-2607009', client:'Syarikat Kia Lim Kilang Batu Bata Sdn Bhd', date:'2026-07-22', amt:6200, items:'Gearmotor DR2S80MK4', status:'Won',
-    outcome:'won', stage:'delivered',
-    addr:['Batu 1 1/4, Jalan Kangkar Senangar','Off Jalan Muar','83500 Parit Sulong, Batu Pahat, Johor'],
-    attn:'Cs Yap',
-    itemsFull:[{desc:'SEW Helical Gearmotor R37 DR2S80MK4/BE1 P', qty:1, price:6200.00}],
-    terms:'1. Price validity: 30 days from the quotation date\n2. Delivery: 2-4 weeks\n3. Payment Terms: COD',
-    preparedBy:'Yap CS', preparedPhone:'+6016-695 5404', preparedEmail:'dynamis.solutions@outlook.com'},
-  {num:'CS-2607008', client:'Petro Rubber Sdn Bhd', date:'2026-07-10', amt:9200, items:'Gearmotor spare kit', status:'Won',
-    outcome:'won', stage:'po',
-    addr:['Lot 22, Jalan Perusahaan 3','Kawasan Perindustrian Nilai','71800 Nilai, Negeri Sembilan'],
-    attn:'Mr Tan @ 012-345 6789',
-    itemsFull:[{desc:'Gearmotor spare kit', qty:1, price:9200.00}],
-    terms:'1. Price validity: 30 days from the quotation date\n2. Delivery: 2-4 weeks\n3. Payment Terms: COD',
-    preparedBy:'Yap CS', preparedPhone:'+6016-695 5404', preparedEmail:'dynamis.solutions@outlook.com'},
-  {num:'CS-2607007', client:'Syarikat Kia Lim Kilang Batu Bata Sdn Bhd', date:'2026-07-05', amt:5400, items:'Brake disc cpl, assorted', status:'Won',
-    outcome:'won', stage:'gr',
-    addr:['Batu 1 1/4, Jalan Kangkar Senangar','Off Jalan Muar','83500 Parit Sulong, Batu Pahat, Johor'],
-    attn:'Cs Yap',
-    itemsFull:[{desc:'Brake disc cpl, assorted', qty:1, price:5400.00}],
-    terms:'1. Price validity: 30 days from the quotation date\n2. Delivery: 2-4 weeks\n3. Payment Terms: COD',
-    preparedBy:'Yap CS', preparedPhone:'+6016-695 5404', preparedEmail:'dynamis.solutions@outlook.com'},
-  {num:'CS-2606006', client:'KWS Automation & Marketing', date:'2026-06-18', amt:7100, items:'Helical gearmotor, 1 unit', status:'Lost',
-    outcome:'lost', stage:'quotation',
-    addr:['No 18 Jalan Belati 1','Off Jalan Kempas Lama','Taman Perindustrian Maju Jaya','81300 Johor Bahru'],
-    attn:'Ms Fang @ 016-737 3113',
-    itemsFull:[{desc:'Helical gearmotor', qty:1, price:7100.00}],
-    terms:'1. Price validity: 30 days from the quotation date\n2. Delivery: 2-4 weeks\n3. Payment Terms: COD',
-    preparedBy:'Yap CS', preparedPhone:'+6016-695 5404', preparedEmail:'dynamis.solutions@outlook.com'},
-];
+let quoteRows = [];
 
-let invoiceRows = [
-  {num:'IV-0826/104', client:'Syarikat Kia Lim', date:'2026-08-04', amt:6200, status:'Open', paidAmt:0},
-  {num:'IV-0826/103', client:'KWS Automation', date:'2026-08-02', amt:8230, status:'Paid', paidAmt:8230},
-  {num:'IV-0726/098', client:'Syarikat Kia Lim', date:'2026-07-24', amt:8000, status:'Partial Payment', paidAmt:3500},
-];
-let doRows = [
-  {num:'DO-0826/104', client:'Syarikat Kia Lim', date:'2026-08-04', items:'Gearmotor R37 + brake disc', status:'Delivered'},
-  {num:'DO-0826/103', client:'KWS Automation', date:'2026-08-02', items:'Helical gear unit R77/A ×2', status:'Delivered'},
-  {num:'DO-0726/098', client:'Syarikat Kia Lim', date:'2026-07-24', items:'Gearmotor DR2S80MK4', status:'Partial'},
-];
-let poRows = [
-  {num:'PO-0826/103', supplier:'Macfil Sdn Bhd', date:'2026-08-01', amt:6003.05, status:'Open'},
-  {num:'PO-0726/102', supplier:'Macfil Sdn Bhd', date:'2026-07-18', amt:3190.00, status:'Received'},
-];
-let grRows = [
-  {num:'GR-0826/041', supplier:'Macfil Sdn Bhd', date:'2026-08-06', items:'Brake disc cpl BE11A ×5', status:'Complete'},
-  {num:'GR-0726/040', supplier:'Macfil Sdn Bhd', date:'2026-07-19', items:'Gearmotor R37 DR2S80MK4', status:'Complete'},
-];
-let piRows = [
-  {num:'PI-0826/044', supplier:'Macfil Sdn Bhd', date:'2026-08-06', amt:6003.05, status:'Open', paidAmt:0},
-  {num:'PI-0726/043', supplier:'Macfil Sdn Bhd', date:'2026-07-19', amt:3190.00, status:'Paid', paidAmt:3190.00},
-];
-let orRows = [
-  {num:'OR-0826/061', client:'Syarikat Kia Lim', date:'2026-08-05', amt:3500, method:'Bank transfer', type:'invoice', allocations:[{inv:'IV-0726/098', amt:3500}], refInvoice:'IV-0726/098'},
-  {num:'OR-0826/060', client:'KWS Automation', date:'2026-08-02', amt:8230, method:'Bank transfer', type:'invoice', allocations:[{inv:'IV-0826/103', amt:8230}], refInvoice:'IV-0826/103'},
-];
-let pvRows = [
-  {num:'PV-0826/039', supplier:'Macfil Sdn Bhd', date:'2026-08-06', amt:3190.00, method:'Bank transfer', allocations:[{pi:'PI-0726/043', amt:3190.00}], refPI:'PI-0726/043'},
-];
+let invoiceRows = [];
+let doRows = [];
+let poRows = [];
+let grRows = [];
+let piRows = [];
+let orRows = [];
+let pvRows = [];
 let proformaRows = [];
 let salesNotes = [];    // {num, type:'CN'|'DN', client, date, amt, reason, itemsFull, addr, refInvoice}
 let purchaseNotes = []; // {num, type:'CN'|'DN', supplier, date, amt, reason, itemsFull, addr, refPI}
@@ -1002,7 +916,7 @@ function answerQuestion(text){
   }
   const r = searchAll(text);
   if(r && r.count>0) return r.html;
-  return `I couldn't match that. I can:<br>• Answer: 顾客还有多少钱没还 / 什么货还没出 / 这个月收了什么货 / sales / P&L / 欠供应商多少 / 哪些 overdue / deposit<br>• Search your records: “找 Kia Lim” , “IV-2609/001” , “gearmotor” , a phone number, a TIN…`;
+  return `I couldn't match that. I can:<br>• Answer: 顾客还有多少钱没还 / 什么货还没出 / 这个月收了什么货 / sales / P&L / 欠供应商多少 / 哪些 overdue / deposit<br>• Search your records: “找 ABC Trading” , “IV-2609/001” , “gearmotor” , a phone number, a TIN…`;
 }
 function toggleAssist(){
   const p = document.getElementById('assist-panel');
@@ -1808,7 +1722,7 @@ function renderCashBook(){
     return `<tr><td class="cell-dim">${fmtDate(p.date)}</td><td class="cell-dim">${escapeHtml(p.ref)}</td><td>${escapeHtml(p.desc)}</td><td class="cell-dim">${p.source}</td>
       <td>${p.debit?fmt2(p.debit):''}</td><td>${p.credit?fmt2(p.credit):''}</td><td class="cell-strong">${fmt2(bal)}</td>
       <td>${reconciled[p.id]?'<span class="alloc-ok">✓</span>':''}</td>
-      <td class="row-actions">${ci>=0?`<button class="pdf-btn" onclick="openCashBookForm(null,${ci})">Edit</button><button class="pdf-btn danger-btn" onclick="deleteCashBook(${ci})">Delete</button>`:'<span class="cell-dim">from '+p.source+'</span>'}</td></tr>`;
+      <td class="row-actions">${ci>=0?`<button class="pdf-btn" onclick="downloadCashBookPDF(${ci})">PDF</button><button class="pdf-btn" onclick="openCashBookForm(null,${ci})">Edit</button><button class="pdf-btn danger-btn" onclick="deleteCashBook(${ci})">Delete</button>`:'<span class="cell-dim">from '+p.source+'</span>'}</td></tr>`;
   }).join('') || '<tr><td colspan="9" class="cell-dim">No entries yet.</td></tr>';
   return `
     <div class="panel">
@@ -1817,6 +1731,7 @@ function renderCashBook(){
         <div class="head-actions">
           <button class="new-btn" onclick="openCashBookForm('Receipt')">+ Receipt</button>
           <button class="new-btn" onclick="openCashBookForm('Payment')">+ Payment</button>
+          <button class="pdf-btn" onclick="printCashBookList()">Print cash book</button>
           <button class="pdf-btn danger-btn" onclick="clearAllCashBook()">Delete All manual entries</button>
         </div>
       </div>
@@ -1912,7 +1827,7 @@ function renderJournalList(){
     const d = j.lines.reduce((t,l)=>t+(l.dr||0),0);
     return `<tr><td class="cell-dim">${j.no}</td><td class="cell-dim">${fmtDate(j.date)}</td><td class="cell-strong">${escapeHtml(j.desc)}</td>
       <td>${fmt2(d)}</td><td class="cell-dim">${j.lines.length} lines</td>
-      <td class="row-actions"><button class="pdf-btn" onclick="openJournalForm(${i})">Edit</button><button class="pdf-btn danger-btn" onclick="deleteJournal(${i})">Delete</button></td></tr>`;
+      <td class="row-actions"><button class="pdf-btn" onclick="downloadJournalPDF(${i})">PDF</button><button class="pdf-btn" onclick="openJournalForm(${i})">Edit</button><button class="pdf-btn danger-btn" onclick="deleteJournal(${i})">Delete</button></td></tr>`;
   }).join('') || '<tr><td colspan="6" class="cell-dim">No journal entries yet.</td></tr>';
   return `
     <div class="panel">
@@ -1920,6 +1835,7 @@ function renderJournalList(){
         <p class="panel-title">Journal Entry</p>
         <div class="head-actions">
           <button class="new-btn" onclick="openJournalForm()">+ New Journal Entry</button>
+          <button class="pdf-btn" onclick="printJournalList()">Print listing</button>
           <button class="pdf-btn danger-btn" onclick="clearAllJournals()">Delete All</button>
         </div>
       </div>
@@ -4075,6 +3991,140 @@ function generatePVPDF(p){
 }
 function downloadPVPDF(i){ generatePVPDF(pvRows[i]); }
 
+
+// ---------- Journal / Cash Book: vouchers and listings ----------
+function pdfSignatureRow(doc, left, y, labels){
+  const gap = 62;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+  labels.forEach((label,i)=>{ const x = left + i*gap; doc.line(x, y+12, x+50, y+12); doc.text(label, x, y+17); });
+}
+function generateJournalPDF(j){
+  if(!window.jspdf){ alert('PDF library did not load — check your connection and try again.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'a4'});
+  const left = 15, right = 195, title = 'JOURNAL VOUCHER';
+  let y = pdfLetterhead(doc, left, right, 18, title, j.no, j.date);
+  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Description', left, y);
+  doc.setFont('helvetica','normal'); const dl = doc.splitTextToSize(j.desc||'', right-left-28); doc.text(dl, left+28, y);
+  y += Math.max(6, dl.length*4.4) + 4;
+  doc.setFont('helvetica','bold'); doc.setFontSize(9);
+  doc.text('No', left, y); doc.text('Account', left+9, y); doc.text('Memo', left+82, y);
+  doc.text('Debit (RM)', 160, y, {align:'right'}); doc.text('Credit (RM)', right, y, {align:'right'});
+  y += 2; doc.line(left, y, right, y); y += 6;
+  doc.setFont('helvetica','normal');
+  let td = 0, tc = 0;
+  j.lines.forEach((l,i)=>{
+    const al = doc.splitTextToSize(accountLabel(l.acct), 70), ml = doc.splitTextToSize(l.memo||'', 46);
+    const h = Math.max(al.length, ml.length)*4.3 + 2;
+    y = pdfCheckPageBreak(doc, y, left, right, title, j.no, j.date, h+2);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    doc.text(String(i+1), left, y); doc.text(al, left+9, y); doc.text(ml, left+82, y);
+    if(l.dr){ doc.text(fmt2(l.dr), 160, y, {align:'right'}); td += l.dr; }
+    if(l.cr){ doc.text(fmt2(l.cr), right, y, {align:'right'}); tc += l.cr; }
+    y += h;
+  });
+  y += 1; doc.line(left, y, right, y); y += 6;
+  doc.setFont('helvetica','bold'); doc.text('Total', left+82, y);
+  doc.text(fmt2(td), 160, y, {align:'right'}); doc.text(fmt2(tc), right, y, {align:'right'});
+  y += 14; y = pdfCheckPageBreak(doc, y, left, right, title, j.no, j.date, 26);
+  pdfSignatureRow(doc, left, y, ['Prepared by','Checked by','Approved by']);
+  pdfStampFixedFooter(doc, left, right, true);
+  doc.save(`${safeFileName(j.no)}.pdf`);
+}
+function downloadJournalPDF(i){ generateJournalPDF(journals[i]); }
+
+function generateCashBookPDF(c){
+  if(!window.jspdf){ alert('PDF library did not load — check your connection and try again.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'a4'});
+  const left = 15, right = 195, rc = c.type==='Receipt';
+  const title = rc ? 'RECEIPT VOUCHER' : 'PAYMENT VOUCHER';
+  let y = pdfLetterhead(doc, left, right, 18, title, c.no, c.date);
+  y = pdfKV(doc, left, y, rc ? 'Received Into' : 'Paid From', accountLabel(c.bank));
+  if(c.ref) y = pdfKV(doc, left, y, 'Cheque / Ref', c.ref);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9);
+  doc.text('Description', left, y); doc.text(':', left+28, y);
+  const dl = doc.splitTextToSize(c.desc||'', right-left-32); doc.text(dl, left+32, y); y += Math.max(5, dl.length*4.4) + 5;
+  doc.setFont('helvetica','bold');
+  doc.text('Account', left, y); doc.text('Debit (RM)', 160, y, {align:'right'}); doc.text('Credit (RM)', right, y, {align:'right'});
+  y += 2; doc.line(left, y, right, y); y += 6;
+  doc.setFont('helvetica','normal');
+  const drAcct = rc ? c.bank : c.contra, crAcct = rc ? c.contra : c.bank;
+  doc.text(accountLabel(drAcct), left, y); doc.text(fmt2(c.amt), 160, y, {align:'right'}); y += 6;
+  doc.text(accountLabel(crAcct), left+6, y); doc.text(fmt2(c.amt), right, y, {align:'right'}); y += 4;
+  doc.line(left, y, right, y); y += 8;
+  doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
+  doc.text(`Total ${rc?'Received':'Paid'}: MYR ${fmt2(c.amt)}`, right, y, {align:'right'});
+  y += 9; doc.setFontSize(9); doc.text(doc.splitTextToSize(amountInWords(c.amt), right-left), left, y);
+  y += 22; pdfSignatureRow(doc, left, y, ['Prepared by','Approved by', rc ? 'Received from' : 'Received by']);
+  pdfStampFixedFooter(doc, left, right, true);
+  doc.save(`${safeFileName(c.no)}.pdf`);
+}
+function downloadCashBookPDF(i){ generateCashBookPDF(cashBookRows[i]); }
+
+function printJournalList(){
+  if(!journals.length){ alert('There are no journal entries yet.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'a4'});
+  const left = 15, right = 195, title = 'JOURNAL ENTRY LISTING';
+  const list = journals.slice().sort((a,b)=>(localDate(a.date)-localDate(b.date)) || (a.no<b.no?-1:1));
+  const rl = [`${fmtDate(list[0].date)} to ${fmtDate(list[list.length-1].date)}`, `${list.length} journal${list.length===1?'':'s'}`];
+  const chk = (yy,n)=> pdfCheckPageBreak(doc, yy, left, right, title, '', list[0].date, n, rl);
+  let y = pdfLetterhead(doc, left, right, 18, title, '', list[0].date, rl);
+  let gd = 0, gc = 0;
+  list.forEach(j=>{
+    y = chk(y, 24); y += 2;
+    doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(0,79,136);
+    doc.text(`${j.no}    ${fmtDate(j.date)}`, left, y); doc.setTextColor(0);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9);
+    y += 5; const dl = doc.splitTextToSize(j.desc||'', right-left); doc.text(dl, left, y); y += dl.length*4.4 + 1;
+    doc.setFontSize(8.5);
+    j.lines.forEach(l=>{
+      y = chk(y, 7); doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
+      doc.text(doc.splitTextToSize(accountLabel(l.acct), 78)[0], left+4, y);
+      doc.text(doc.splitTextToSize(l.memo||'', 42)[0], left+86, y);
+      if(l.dr){ doc.text(fmt2(l.dr), 160, y, {align:'right'}); gd += l.dr; }
+      if(l.cr){ doc.text(fmt2(l.cr), right, y, {align:'right'}); gc += l.cr; }
+      y += 4.6;
+    });
+    y += 2; doc.setDrawColor(200); doc.line(left, y-1, right, y-1); doc.setDrawColor(0);
+  });
+  y = chk(y, 12); y += 4;
+  doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+  doc.text('Total', left+86, y); doc.text(fmt2(gd), 160, y, {align:'right'}); doc.text(fmt2(gc), right, y, {align:'right'});
+  pdfStampFixedFooter(doc, left, right, true);
+  doc.save('Journal_Listing_'+todayISO()+'.pdf');
+}
+function printCashBookList(){
+  const acct = accountByCode(cbAccount);
+  const posts = glPostings().filter(p=>p.acct===cbAccount);
+  if(!acct || !posts.length){ alert('There are no entries in this account yet.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'a4'});
+  const left = 15, right = 195, title = 'CASH BOOK';
+  const rl = [accountLabel(cbAccount), `${fmtDate(posts[0].date)} to ${fmtDate(posts[posts.length-1].date)}`];
+  const chk = (yy,n)=> pdfCheckPageBreak(doc, yy, left, right, title, '', posts[0].date, n, rl);
+  let y = pdfLetterhead(doc, left, right, 18, title, '', posts[0].date, rl);
+  doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+  doc.text('Date', left, y); doc.text('Ref', left+21, y); doc.text('Chq / Ref', left+47, y); doc.text('Description', left+72, y);
+  doc.text('Receipt', 148, y, {align:'right'}); doc.text('Payment', 168, y, {align:'right'}); doc.text('Balance', right, y, {align:'right'});
+  y += 2; doc.line(left, y, right, y); y += 5.5;
+  let bal = 0, tr = 0, tp = 0;
+  posts.forEach(p=>{
+    y = chk(y, 7); bal += p.debit - p.credit; tr += p.debit; tp += p.credit;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8);
+    doc.text(fmtDate(p.date), left, y); doc.text(String(p.ref).slice(0,15), left+21, y); doc.text(String(p.chq||'').slice(0,13), left+47, y);
+    doc.text(doc.splitTextToSize(String(p.party||p.desc), 42)[0], left+72, y);
+    if(p.debit) doc.text(fmt2(p.debit), 148, y, {align:'right'}); if(p.credit) doc.text(fmt2(p.credit), 168, y, {align:'right'});
+    doc.text(money(bal), right, y, {align:'right'}); y += 4.6;
+  });
+  y += 1; doc.line(left, y, right, y); y += 5;
+  doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+  doc.text('Total', left+72, y); doc.text(fmt2(tr), 148, y, {align:'right'}); doc.text(fmt2(tp), 168, y, {align:'right'}); doc.text(money(bal), right, y, {align:'right'});
+  pdfStampFixedFooter(doc, left, right, true);
+  doc.save(`Cash_Book_${safeFileName(cbAccount)}_${todayISO()}.pdf`);
+}
+
 // ---------- Sales Order PDF ----------
 function generateSOPDF(so){
   if(!window.jspdf){ alert('PDF library did not load — check your connection and try again.'); return; }
@@ -5424,6 +5474,11 @@ function renderBackup(){
     </div>`;
 }
 
+function updateNavBadges(){
+  const el = document.getElementById('so-badge'); if(!el) return;
+  const n = quoteRows.filter(q=>q.outcome==='won' && q.stage!=='delivered').length;
+  el.textContent = n; el.style.display = n>0 ? '' : 'none';
+}
 function render(view){
   currentView = view;
   document.getElementById('content').innerHTML = views[view]();
@@ -5433,6 +5488,7 @@ function render(view){
   document.querySelectorAll('.nav-item').forEach(el=>{
     el.classList.toggle('active', el.dataset.view===view);
   });
+  updateNavBadges();
   cloudQueue();
 }
 document.querySelectorAll('.nav-item').forEach(el=>{
