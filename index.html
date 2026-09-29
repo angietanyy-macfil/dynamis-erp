@@ -635,6 +635,10 @@
 const fmt = n => Number(n).toLocaleString('en-MY', {minimumFractionDigits:0, maximumFractionDigits:2});
 const fmt2 = n => Number(n).toLocaleString('en-MY', {minimumFractionDigits:2, maximumFractionDigits:2});
 const safeFileName = x => String(x).replace(/[\\/:*?"<>|]+/g,'-');
+function addrDiffers(a,b){
+  const norm = arr => (arr||[]).map(x=>String(x).trim()).filter(Boolean).join('|').toLowerCase();
+  return norm(a) !== '' && norm(a) !== norm(b);
+}
 const fmtDate = iso => {
   if(!iso) return '';
   const parts = String(iso).split('-');
@@ -1198,6 +1202,8 @@ function openSOFormFromFlow(quoteNum){
   currentFormItems = (q.itemsFull && q.itemsFull.length ? q.itemsFull : [{desc:q.items, qty:1, price:q.amt}]).map(it=>({...it}));
   const num = generateDocNumber('so');
   const today = new Date().toISOString().slice(0,10);
+  const custObj = lookupCustomerByName(q.client);
+  const deliveryAddr = (q.deliveryAddr && q.deliveryAddr.length) ? q.deliveryAddr : ((custObj && custObj.deliveryAddr && custObj.deliveryAddr.length) ? custObj.deliveryAddr : (q.addr||[]));
   const header = `
     <div class="form-grid">
       <div class="form-field"><label>SO Number</label><input id="f-num" class="form-input" value="${num}" readonly data-numtype="so"></div>
@@ -1206,7 +1212,9 @@ function openSOFormFromFlow(quoteNum){
     <div class="form-grid">
       <div class="form-field"><label>Customer</label><div class="form-static">${q.client}</div></div>
       <div class="form-field"><label>Reference Quotation</label><div class="form-static">${q.num}</div></div>
-    </div>`;
+    </div>
+    <div class="form-field full"><label>Customer's PO No. <span class="cell-dim" style="font-weight:400">(their reference — carries through to the Delivery Order &amp; Invoice)</span></label><input id="f-customer-po" class="form-input" value="${q.customerPO||''}" placeholder="e.g. POA049876"></div>
+    <div class="form-field full"><label>Delivery Address</label><textarea id="f-delivery-addr" class="form-input" rows="3">${deliveryAddr.join('\n')}</textarea></div>`;
   document.getElementById('content').innerHTML = docFormShell('Create Sales Order', 'flow', header, `saveSOFromFlow('${q.num}')`, 'Save Sales Order');
   document.getElementById('page-title').textContent = 'Create Sales Order';
   document.getElementById('page-sub').textContent = `From ${q.num} · ${q.client}`;
@@ -1217,15 +1225,25 @@ function saveSOFromFlow(quoteNum){
   if(!q) return;
   const num = document.getElementById('f-num').value;
   const date = document.getElementById('f-date').value;
+  const customerPO = document.getElementById('f-customer-po').value.trim();
+  const deliveryAddr = document.getElementById('f-delivery-addr').value.split('\n').map(x=>x.trim()).filter(Boolean);
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
   const itemsSummary = items.map(it=>`${it.desc} x${it.qty}`).join(', ');
-  soRows.unshift({num, client:q.client, date, amt, items:itemsSummary, status:'Confirmed', itemsFull:items, addr:q.addr, attn:q.attn, refQuotation:q.num});
+  soRows.unshift({num, client:q.client, date, amt, items:itemsSummary, status:'Confirmed', itemsFull:items, addr:q.addr, deliveryAddr, attn:q.attn, customerPO, refQuotation:q.num});
   bumpNumber('so', date);
+  // Keep what was originally quoted for the Quotation module's own records — the customer may have
+  // ordered a different quantity from what was quoted, and the Sales Order is the actual, confirmed order.
+  if(q.quotedAmt===undefined){ q.quotedAmt = q.amt; q.quotedItems = q.items; q.quotedItemsFull = (q.itemsFull||[]).map(it=>({...it})); }
+  q.itemsFull = items.map(it=>({...it}));
+  q.amt = amt;
+  q.items = itemsSummary;
   q.soNum = num;
+  q.customerPO = customerPO;
+  q.deliveryAddr = deliveryAddr;
   q.stage = customerPaymentPolicy(q.client)==='Deposit Required' ? 'proforma' : 'po';
-  generateSOPDF({num, client:q.client, date, addr:q.addr, attn:q.attn, items, refQuotation:q.num});
+  generateSOPDF({num, client:q.client, date, addr:q.addr, attn:q.attn, items, refQuotation:q.num, customerPO});
   render('flow');
 }
 function advanceFromProforma(quoteNum){
@@ -1255,7 +1273,9 @@ function openSOEditForm(i){
       <div class="form-field"><label>SO Number</label><input id="f-num" class="form-input" value="${r.num}" readonly></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${r.date}"></div>
     </div>
-    <div class="form-field full"><label>Customer</label><div class="form-static">${r.client}</div></div>`;
+    <div class="form-field full"><label>Customer</label><div class="form-static">${r.client}</div></div>
+    <div class="form-field full"><label>Customer's PO No.</label><input id="f-customer-po" class="form-input" value="${r.customerPO||''}" placeholder="e.g. POA049876"></div>
+    <div class="form-field full"><label>Delivery Address</label><textarea id="f-delivery-addr" class="form-input" rows="3">${(r.deliveryAddr||r.addr||[]).join('\n')}</textarea></div>`;
   document.getElementById('content').innerHTML = docFormShell('Edit Sales Order', 'so', header, `saveSOEdit(${i})`, 'Save Changes');
   document.getElementById('page-title').textContent = 'Edit Sales Order';
   document.getElementById('page-sub').textContent = r.num;
@@ -1264,11 +1284,21 @@ function openSOEditForm(i){
 function saveSOEdit(i){
   const r = soRows[i];
   const date = document.getElementById('f-date').value;
+  const customerPO = document.getElementById('f-customer-po').value.trim();
+  const deliveryAddr = document.getElementById('f-delivery-addr').value.split('\n').map(x=>x.trim()).filter(Boolean);
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
   const itemsSummary = items.map(it=>`${it.desc} x${it.qty}`).join(', ');
-  soRows[i] = {...r, date, amt, items:itemsSummary, itemsFull:items};
+  soRows[i] = {...r, date, amt, items:itemsSummary, itemsFull:items, customerPO, deliveryAddr};
+  // If this Sales Order is still linked to its quotation (nothing built on top of it yet), keep them in sync
+  const q = quoteRows.find(x=>x.soNum===r.num);
+  if(q && (q.stage==='so' || q.stage==='po' || q.stage==='proforma')){
+    if(q.quotedAmt===undefined){ q.quotedAmt = q.amt; q.quotedItems = q.items; q.quotedItemsFull = (q.itemsFull||[]).map(it=>({...it})); }
+    q.itemsFull = items.map(it=>({...it}));
+    q.amt = amt;
+    q.items = itemsSummary;
+  }
   render('so');
 }
 
@@ -1292,7 +1322,13 @@ function openInvoiceEditForm(i){
       <div class="form-field"><label>Invoice Number</label><input id="f-num" class="form-input" value="${r.num}" readonly></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${r.date}"></div>
     </div>
-    <div class="form-field full"><label>Customer</label><div class="form-static">${r.client}</div></div>`;
+    <div class="form-field full"><label>Customer</label><div class="form-static">${r.client}</div></div>
+    <div class="form-grid">
+      <div class="form-field"><label>Attn</label><input id="f-attn" class="form-input" value="${r.attn||''}"></div>
+      <div class="form-field"><label>Customer's PO No.</label><input id="f-customer-po" class="form-input" value="${r.customerPO||''}"></div>
+    </div>
+    <div class="form-field full"><label>Delivery Address</label><textarea id="f-delivery-addr" class="form-input" rows="3">${(r.deliveryAddr||r.addr||[]).join('\n')}</textarea></div>
+    <div class="form-field full"><label>Remarks</label><textarea id="f-remarks" class="form-input" rows="2">${r.remarks||''}</textarea></div>`;
   document.getElementById('content').innerHTML = docFormShell('Edit Invoice', 'invoice', header, `saveInvoiceEdit(${i})`, 'Save Changes');
   document.getElementById('page-title').textContent = 'Edit Invoice';
   document.getElementById('page-sub').textContent = r.num;
@@ -1301,10 +1337,14 @@ function openInvoiceEditForm(i){
 function saveInvoiceEdit(i){
   const r = invoiceRows[i];
   const date = document.getElementById('f-date').value;
+  const attn = document.getElementById('f-attn').value.trim();
+  const customerPO = document.getElementById('f-customer-po').value.trim();
+  const deliveryAddr = document.getElementById('f-delivery-addr').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  const remarks = document.getElementById('f-remarks').value.trim();
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
-  invoiceRows[i] = {...r, date, amt, itemsFull:items};
+  invoiceRows[i] = {...r, date, amt, itemsFull:items, attn, customerPO, deliveryAddr, remarks};
   render('invoice');
 }
 
@@ -1328,7 +1368,10 @@ function openDOEditForm(i){
       <div class="form-field"><label>DO Number</label><input id="f-num" class="form-input" value="${r.num}" readonly></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${r.date}"></div>
     </div>
-    <div class="form-field full"><label>Customer</label><div class="form-static">${r.client}</div></div>`;
+    <div class="form-field full"><label>Customer</label><div class="form-static">${r.client}</div></div>
+    <div class="form-field full"><label>Customer's PO No.</label><input id="f-customer-po" class="form-input" value="${r.customerPO||''}"></div>
+    <div class="form-field full"><label>Delivery Address</label><textarea id="f-delivery-addr" class="form-input" rows="3">${(r.deliveryAddr||r.addr||[]).join('\n')}</textarea></div>
+    <div class="form-field full"><label>Remarks</label><textarea id="f-remarks" class="form-input" rows="2">${r.remarks||''}</textarea></div>`;
   document.getElementById('content').innerHTML = docFormShell('Edit Delivery Order', 'do', header, `saveDOEdit(${i})`, 'Save Changes');
   document.getElementById('page-title').textContent = 'Edit Delivery Order';
   document.getElementById('page-sub').textContent = r.num;
@@ -1337,10 +1380,13 @@ function openDOEditForm(i){
 function saveDOEdit(i){
   const r = doRows[i];
   const date = document.getElementById('f-date').value;
+  const customerPO = document.getElementById('f-customer-po').value.trim();
+  const deliveryAddr = document.getElementById('f-delivery-addr').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  const remarks = document.getElementById('f-remarks').value.trim();
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const itemsSummary = items.map(it=>`${it.desc} x${it.qty}`).join(', ');
-  doRows[i] = {...r, date, items:itemsSummary, itemsFull:items};
+  doRows[i] = {...r, date, items:itemsSummary, itemsFull:items, customerPO, deliveryAddr, remarks};
   render('do');
 }
 
@@ -1364,7 +1410,8 @@ function openPOEditForm(i){
       <div class="form-field"><label>PO Number</label><input id="f-num" class="form-input" value="${r.num}" readonly></div>
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${r.date}"></div>
     </div>
-    <div class="form-field full"><label>Supplier</label><div class="form-static">${r.supplier}</div></div>`;
+    <div class="form-field full"><label>Supplier</label><div class="form-static">${r.supplier}</div></div>
+    <div class="form-field full"><label>Remarks</label><textarea id="f-remarks" class="form-input" rows="2">${r.remarks||''}</textarea></div>`;
   document.getElementById('content').innerHTML = docFormShell('Edit Purchase Order', 'po', header, `savePOEdit(${i})`, 'Save Changes');
   document.getElementById('page-title').textContent = 'Edit Purchase Order';
   document.getElementById('page-sub').textContent = r.num;
@@ -1373,10 +1420,11 @@ function openPOEditForm(i){
 function savePOEdit(i){
   const r = poRows[i];
   const date = document.getElementById('f-date').value;
+  const remarks = document.getElementById('f-remarks').value.trim();
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
-  poRows[i] = {...r, date, amt, itemsFull:items};
+  poRows[i] = {...r, date, amt, itemsFull:items, remarks};
   render('po');
 }
 
@@ -2869,7 +2917,7 @@ function generateProformaPDF(pf){
   const custObj = lookupCustomerByName(pf.client);
   const addr = (pf.addr && pf.addr.length) ? pf.addr : (custObj ? custObj.addr : []);
   let y = pdfLetterhead(doc, left, right, 18, 'PROFORMA INVOICE', pf.num, pf.date);
-  y = pdfPartyBlock(doc, left, y, 'To', pf.client, addr, pf.attn, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null);
+  y = pdfPartyBlock(doc, left, y, 'To', pf.client, addr, pf.attn, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null, custObj?custObj.phone:null);
   if(pf.refSO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference Sales Order: ${pf.refSO}`, left, y); y += 8; }
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
@@ -3107,6 +3155,7 @@ function openPOFormFromFlow(quoteNum){
       </div>
       <div class="form-field"><label>Reference Sales Order</label><div class="form-static">${q.soNum || q.num}</div></div>
     </div>
+    <div class="form-field full"><label>Remarks <span class="cell-dim" style="font-weight:400">(e.g. requested delivery date)</span></label><textarea id="f-remarks" class="form-input" rows="2" placeholder="e.g. Please deliver by 15 Oct 2026"></textarea></div>
     <p class="section-note">Item descriptions and quantities are carried over from the Sales Order — prices start at RM 0 since your cost from the supplier is separate from the customer's price. Key in the actual supplier price per item.</p>`;
   document.getElementById('content').innerHTML = docFormShell('Create Purchase Order', 'flow', header, `savePOFromFlow('${q.num}')`, 'Save Purchase Order');
   document.getElementById('page-title').textContent = 'Create Purchase Order';
@@ -3124,12 +3173,13 @@ function savePOFromFlow(quoteNum){
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
-  poRows.unshift({num, supplier:supplier.name, date, amt, status:'Open', itemsFull:items, addr:supplier.addr, attn:supplier.attn, refSO:q.soNum||q.num});
+  const remarks = document.getElementById('f-remarks').value.trim();
+  poRows.unshift({num, supplier:supplier.name, date, amt, status:'Open', itemsFull:items, addr:supplier.addr, attn:supplier.attn, remarks, refSO:q.soNum||q.num});
   bumpNumber('po', date);
   q.poNum = num;
   q.poSupplier = supplier.name;
   q.stage = 'gr';
-  generatePOPDF({num, supplier:supplier.name, date, addr:supplier.addr, attn:supplier.attn, items, refSO:q.soNum||q.num});
+  generatePOPDF({num, supplier:supplier.name, date, addr:supplier.addr, attn:supplier.attn, remarks, items, refSO:q.soNum||q.num});
   render('flow');
 }
 
@@ -3183,6 +3233,8 @@ function openDeliveryFormFromFlow(quoteNum){
   const doNum = generateDocNumber('do');
   const invNum = generateDocNumber('invoice');
   const today = new Date().toISOString().slice(0,10);
+  const custObj = lookupCustomerByName(q.client);
+  const deliveryAddr = (q.deliveryAddr && q.deliveryAddr.length) ? q.deliveryAddr : ((custObj && custObj.deliveryAddr && custObj.deliveryAddr.length) ? custObj.deliveryAddr : (q.addr||[]));
   const header = `
     <div class="form-grid">
       <div class="form-field"><label>DO Number</label><input id="f-do-num" class="form-input" value="${doNum}" readonly data-numtype="do"></div>
@@ -3191,7 +3243,13 @@ function openDeliveryFormFromFlow(quoteNum){
     <div class="form-grid">
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${today}"></div>
       <div class="form-field"><label>Customer</label><div class="form-static">${q.client}</div></div>
-    </div>`;
+    </div>
+    <div class="form-grid">
+      <div class="form-field"><label>Attn (printed on the Invoice)</label><input id="f-attn" class="form-input" value="${q.attn||''}"></div>
+      <div class="form-field"><label>Customer's PO No.</label><input id="f-customer-po" class="form-input" value="${q.customerPO||''}" placeholder="e.g. POA049876"></div>
+    </div>
+    <div class="form-field full"><label>Delivery Address</label><textarea id="f-delivery-addr" class="form-input" rows="3">${deliveryAddr.join('\n')}</textarea></div>
+    <div class="form-field full"><label>Remarks <span class="cell-dim" style="font-weight:400">(printed on both the Delivery Order and the Invoice)</span></label><textarea id="f-remarks" class="form-input" rows="2" placeholder="e.g. Please contact security before delivery"></textarea></div>`;
   document.getElementById('content').innerHTML = docFormShell('Create Delivery Order &amp; Invoice', 'flow', header, `saveDeliveryFromFlow('${q.num}')`, 'Save DO &amp; Invoice');
   document.getElementById('page-title').textContent = 'Create Delivery Order & Invoice';
   document.getElementById('page-sub').textContent = `From ${q.grNum || q.num} · ${q.client}`;
@@ -3203,6 +3261,10 @@ function saveDeliveryFromFlow(quoteNum){
   const doNum = document.getElementById('f-do-num').value;
   const invNum = document.getElementById('f-inv-num').value;
   const date = document.getElementById('f-date').value;
+  const attn = document.getElementById('f-attn').value.trim();
+  const customerPO = document.getElementById('f-customer-po').value.trim();
+  const deliveryAddr = document.getElementById('f-delivery-addr').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  const remarks = document.getElementById('f-remarks').value.trim();
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
@@ -3212,16 +3274,18 @@ function saveDeliveryFromFlow(quoteNum){
   const depositApplied = depositTotalForQuote(q.num);
   const paidAmt = Math.min(depositApplied, amt);
   const status = paidAmt >= amt - 0.005 ? 'Paid' : (paidAmt > 0 ? 'Partial Payment' : 'Open');
-  doRows.unshift({num:doNum, client:q.client, date, items:itemsSummary, status:'Delivered', itemsFull:items, addr:q.addr, refSO:q.soNum||q.num});
-  invoiceRows.unshift({num:invNum, client:q.client, date, amt, status, itemsFull:items, addr:q.addr, refDO:doNum, refProforma:q.proformaNum, terms, paidAmt, depositApplied});
+  doRows.unshift({num:doNum, client:q.client, date, items:itemsSummary, status:'Delivered', itemsFull:items, addr:q.addr, deliveryAddr, customerPO, remarks, refSO:q.soNum||q.num});
+  invoiceRows.unshift({num:invNum, client:q.client, date, amt, status, itemsFull:items, addr:q.addr, deliveryAddr, attn, customerPO, remarks, refDO:doNum, refProforma:q.proformaNum, terms, paidAmt, depositApplied});
   bumpNumber('do', date);
   bumpNumber('invoice', date);
   q.doNum = doNum;
   q.invNum = invNum;
+  q.customerPO = customerPO;
+  q.deliveryAddr = deliveryAddr;
   q.stage = 'delivered';
-  generateDOPDF({num:doNum, client:q.client, date, addr:q.addr, items, refSO:q.soNum||q.num});
+  generateDOPDF({num:doNum, client:q.client, date, addr:q.addr, deliveryAddr, customerPO, remarks, items, refSO:q.soNum||q.num});
   setTimeout(()=>{
-    generateInvoicePDF({num:invNum, client:q.client, date, addr:q.addr, items, refDO:doNum, refProforma:q.proformaNum, terms, depositApplied});
+    generateInvoicePDF({num:invNum, client:q.client, date, addr:q.addr, deliveryAddr, attn, customerPO, remarks, items, refDO:doNum, refProforma:q.proformaNum, terms, depositApplied});
   }, 500);
   render('flow');
 }
@@ -3318,7 +3382,7 @@ function deleteCustomerRow(i){
   render('customers');
 }
 function customerFormHTML(existing){
-  const c = existing || {name:'',addr:[],attn:'',phone:'',email:'',terms:'30 Days',agent:'',creditLimit:0,paymentPolicy:'Credit Term',buyerTin:'',buyerRegNo:''};
+  const c = existing || {name:'',addr:[],deliveryAddr:[],attn:'',phone:'',email:'',terms:'30 Days',agent:'',creditLimit:0,paymentPolicy:'Credit Term',buyerTin:'',buyerRegNo:''};
   const policy = c.paymentPolicy || 'Credit Term';
   return `
     <div class="panel">
@@ -3328,7 +3392,8 @@ function customerFormHTML(existing){
       </div>
       <div class="form-body">
         <div class="form-field full"><label>Company Name</label><input id="c-name" class="form-input" value="${c.name}" placeholder="Customer company name"></div>
-        <div class="form-field full"><label>Address</label><textarea id="c-addr" class="form-input" rows="3" placeholder="One line per address line">${(c.addr||[]).join('\n')}</textarea></div>
+        <div class="form-field full"><label>Address (billing)</label><textarea id="c-addr" class="form-input" rows="3" placeholder="One line per address line">${(c.addr||[]).join('\n')}</textarea></div>
+        <div class="form-field full"><label>Delivery Address <span class="cell-dim" style="font-weight:400">(leave blank if same as billing address)</span></label><textarea id="c-delivery-addr" class="form-input" rows="3" placeholder="One line per address line">${(c.deliveryAddr||[]).join('\n')}</textarea></div>
         <div class="form-grid three">
           <div class="form-field"><label>Attn / Contact</label><input id="c-attn" class="form-input" value="${c.attn||''}" placeholder="Contact person @ phone"></div>
           <div class="form-field"><label>Phone</label><input id="c-phone" class="form-input" value="${c.phone||''}"></div>
@@ -3386,6 +3451,7 @@ function saveCustomer(){
   const name = document.getElementById('c-name').value.trim();
   if(!name){ alert('Please enter the company name.'); return; }
   const addr = document.getElementById('c-addr').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const deliveryAddr = document.getElementById('c-delivery-addr').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const attn = document.getElementById('c-attn').value;
   const phone = document.getElementById('c-phone').value;
   const email = document.getElementById('c-email').value;
@@ -3400,10 +3466,10 @@ function saveCustomer(){
 
   if(editingCustomerIndex!==null){
     const id = customers[editingCustomerIndex].id;
-    customers[editingCustomerIndex] = {id, name, addr, attn, phone, email, terms, termDays, agent, creditLimit, paymentPolicy, buyerTin, buyerRegNo};
+    customers[editingCustomerIndex] = {id, name, addr, deliveryAddr, attn, phone, email, terms, termDays, agent, creditLimit, paymentPolicy, buyerTin, buyerRegNo};
   } else {
     const id = 'CUST-' + String(customers.length+1).padStart(3,'0');
-    customers.push({id, name, addr, attn, phone, email, terms, termDays, agent, creditLimit, paymentPolicy, buyerTin, buyerRegNo});
+    customers.push({id, name, addr, deliveryAddr, attn, phone, email, terms, termDays, agent, creditLimit, paymentPolicy, buyerTin, buyerRegNo});
   }
   render('customers');
 }
@@ -3595,8 +3661,8 @@ function renderQuotationList(){
               <td class="cell-dim">${r.num}</td>
               <td class="cell-strong">${r.client}</td>
               <td class="cell-dim">${fmtDate(r.date)}</td>
-              <td>${fmt(r.amt)}</td>
-              <td class="cell-dim">${r.items}</td>
+              <td>${fmt(r.quotedAmt!=null?r.quotedAmt:r.amt)}</td>
+              <td class="cell-dim">${r.quotedItems!=null?r.quotedItems:r.items}</td>
               <td>${statusBadge(r.status)}</td>
               <td class="row-actions">
                 <button class="pdf-btn" onclick="downloadQuotationPDF(${i})">PDF</button>
@@ -3726,8 +3792,9 @@ function openQuotationForm(){
 function openQuotationEditForm(i){
   editingQuotationIndex = i;
   const r = quoteRows[i];
-  currentFormItems = (r.itemsFull && r.itemsFull.length ? r.itemsFull : [{desc:r.items, qty:1, price:r.amt}]).map(it=>({...it}));
-  document.getElementById('content').innerHTML = quotationFormHTML(r.num, r);
+  const src = r.quotedItemsFull!=null ? r.quotedItemsFull : r.itemsFull;
+  currentFormItems = (src && src.length ? src : [{desc:r.items, qty:1, price:r.amt}]).map(it=>({...it}));
+  document.getElementById('content').innerHTML = quotationFormHTML(r.num, {...r, amt: r.quotedAmt!=null?r.quotedAmt:r.amt});
   document.getElementById('page-title').textContent = 'Edit Quotation';
   document.getElementById('page-sub').textContent = r.num;
   recalcFormTotal();
@@ -3754,8 +3821,14 @@ function saveQuotation(){
 
   if(editingQuotationIndex!==null){
     const prev = quoteRows[editingQuotationIndex];
-    quoteRows[editingQuotationIndex] = {...prev, client: customer.name, date, amt: total, items: itemsSummary,
-      addr, attn, terms, preparedBy, preparedPhone, preparedEmail, itemsFull: items};
+    // Once a Sales Order has been confirmed from this quotation, its actual (possibly different) quantities
+    // are what flows on to PO/GR/DO/Invoice — editing the quotation here only corrects the quoted record.
+    const confirmed = prev.quotedAmt!==undefined;
+    quoteRows[editingQuotationIndex] = confirmed
+      ? {...prev, client: customer.name, date, addr, attn, terms, preparedBy, preparedPhone, preparedEmail,
+          quotedAmt: total, quotedItems: itemsSummary, quotedItemsFull: items}
+      : {...prev, client: customer.name, date, amt: total, items: itemsSummary,
+          addr, attn, terms, preparedBy, preparedPhone, preparedEmail, itemsFull: items};
     generateQuotationPDF({num, date, client: customer.name, addr, attn, items, terms, preparedBy, preparedPhone, preparedEmail});
     editingQuotationIndex = null;
     render('quotation');
@@ -3776,7 +3849,7 @@ function downloadQuotationPDF(idx){
     num: q.num, date: q.date, client: q.client,
     addr: q.addr || ['Address on file'],
     attn: q.attn || '-',
-    items: q.itemsFull || [{desc:q.items, qty:1, price:q.amt}],
+    items: q.quotedItemsFull!=null ? q.quotedItemsFull : (q.itemsFull || [{desc:q.items, qty:1, price:q.amt}]),
     terms: q.terms || '1. Price validity: 30 days from the quotation date\n2. Delivery: 2-4 weeks\n3. Payment Terms: COD',
     preparedBy: q.preparedBy || 'Yap CS',
     preparedPhone: q.preparedPhone || '+6016-695 5404',
@@ -3791,7 +3864,7 @@ function generateQuotationPDF(q){
   const custObj = lookupCustomerByName(q.client);
   const addr = (q.addr && q.addr.length) ? q.addr : (custObj ? custObj.addr : []);
   let y = pdfLetterhead(doc, left, right, 18, 'QUOTATION', q.num, q.date);
-  y = pdfPartyBlock(doc, left, y, 'To', q.client, addr, q.attn, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null);
+  y = pdfPartyBlock(doc, left, y, 'To', q.client, addr, q.attn, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null, custObj?custObj.phone:null);
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
   doc.text('No', left, y);
@@ -3986,7 +4059,7 @@ function generateORPDF(o){
   const left = 15, right = 195;
   const custObj = lookupCustomerByName(o.client);
   let y = pdfLetterhead(doc, left, right, 18, 'OFFICIAL RECEIPT', o.num, o.date);
-  y = pdfPartyBlock(doc, left, y, 'Received From', o.client, custObj?custObj.addr:[], custObj?custObj.attn:null, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null);
+  y = pdfPartyBlock(doc, left, y, 'Received From', o.client, custObj?custObj.addr:[], custObj?custObj.attn:null, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null, custObj?custObj.phone:null);
   y = pdfKV(doc, left, y, 'Payment Method', o.method);
   y = pdfKV(doc, left, y, 'Received Into', accountLabel(o.bankAcct || defaultBankFor(o.method)));
   if(o.chqNo) y = pdfKV(doc, left, y, 'Cheque / Ref', o.chqNo);
@@ -4029,7 +4102,7 @@ function generatePVPDF(p){
   const left = 15, right = 195;
   const sup = lookupSupplierByName(p.supplier);
   let y = pdfLetterhead(doc, left, right, 18, 'PAYMENT VOUCHER', p.num, p.date);
-  y = pdfPartyBlock(doc, left, y, 'Paid To', p.supplier, sup?sup.addr:[], sup?sup.attn:null);
+  y = pdfPartyBlock(doc, left, y, 'Paid To', p.supplier, sup?sup.addr:[], sup?sup.attn:null, null, null, sup?sup.phone:null);
   y = pdfKV(doc, left, y, 'Payment Method', p.method);
   y = pdfKV(doc, left, y, 'Paid From', accountLabel(p.bankAcct || defaultBankFor(p.method)));
   if(p.chqNo) y = pdfKV(doc, left, y, 'Cheque / Ref', p.chqNo);
@@ -4207,8 +4280,10 @@ function generateSOPDF(so){
   const custObj = lookupCustomerByName(so.client);
   const addr = (so.addr && so.addr.length) ? so.addr : (custObj ? custObj.addr : []);
   let y = pdfLetterhead(doc, left, right, 18, 'SALES ORDER', so.num, so.date);
-  y = pdfPartyBlock(doc, left, y, 'Customer', so.client, addr, so.attn, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null);
-  if(so.refQuotation){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference Quotation: ${so.refQuotation}`, left, y); y += 8; }
+  y = pdfPartyBlock(doc, left, y, 'Customer', so.client, addr, so.attn, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null, custObj?custObj.phone:null);
+  if(so.refQuotation){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference Quotation: ${so.refQuotation}`, left, y); y += 5; }
+  if(so.customerPO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Customer's PO No.: ${so.customerPO}`, left, y); y += 5; }
+  y += 3;
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
   doc.text('No', left, y); doc.text('Item Description', left+10, y);
@@ -4242,7 +4317,7 @@ function generatePOPDF(po){
   const addr = (po.addr && po.addr.length) ? po.addr : (supObj ? supObj.addr : []);
   const attn = po.attn || (supObj ? supObj.attn : null);
   let y = pdfLetterhead(doc, left, right, 18, 'PURCHASE ORDER', po.num, po.date);
-  y = pdfPartyBlock(doc, left, y, 'To', po.supplier, addr, attn);
+  y = pdfPartyBlock(doc, left, y, 'To', po.supplier, addr, attn, null, null, supObj?supObj.phone:null);
   if(po.refSO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference Sales Order: ${po.refSO}`, left, y); y += 8; }
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
@@ -4264,9 +4339,10 @@ function generatePOPDF(po){
   doc.setFont('helvetica','bold'); doc.setFontSize(10.5);
   doc.text(`Total Amount (MYR): ${fmt2(total)}`, right, y, {align:'right'});
   y += 12;
-  y = pdfCheckPageBreak(doc, y, left, right, 'PURCHASE ORDER', po.num, po.date, 10);
+  const remarkLines = doc.splitTextToSize(po.remarks && po.remarks.trim() ? po.remarks : '-', right-left);
+  y = pdfCheckPageBreak(doc, y, left, right, 'PURCHASE ORDER', po.num, po.date, remarkLines.length*4.6+8);
   doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Remarks:', left, y); y += 5;
-  doc.setFont('helvetica','normal'); doc.text('-', left, y);
+  doc.setFont('helvetica','normal'); doc.text(remarkLines, left, y);
   pdfStampFixedFooter(doc, left, right);
   doc.save(`${safeFileName(po.num)}.pdf`);
 }
@@ -4280,7 +4356,7 @@ function generateGRPDF(gr){
   const supObj = lookupSupplierByName(gr.supplier);
   const addr = (gr.addr && gr.addr.length) ? gr.addr : (supObj ? supObj.addr : []);
   let y = pdfLetterhead(doc, left, right, 18, 'GOODS RECEIVED NOTE', gr.num, gr.date);
-  y = pdfPartyBlock(doc, left, y, 'Received From', gr.supplier, addr, null);
+  y = pdfPartyBlock(doc, left, y, 'Received From', gr.supplier, addr, supObj?supObj.attn:null, null, null, supObj?supObj.phone:null);
   if(gr.refPO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference PO: ${gr.refPO}`, left, y); y += 8; }
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
@@ -4307,9 +4383,17 @@ function generateDOPDF(dorec){
   const left = 15, right = 195;
   const custObj = lookupCustomerByName(dorec.client);
   const addr = (dorec.addr && dorec.addr.length) ? dorec.addr : (custObj ? custObj.addr : []);
+  const deliveryAddr = (dorec.deliveryAddr && dorec.deliveryAddr.length) ? dorec.deliveryAddr : ((custObj && custObj.deliveryAddr && custObj.deliveryAddr.length) ? custObj.deliveryAddr : []);
   let y = pdfLetterhead(doc, left, right, 18, 'DELIVERY ORDER', dorec.num, dorec.date);
-  y = pdfPartyBlock(doc, left, y, 'Sold To', dorec.client, addr, null, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null);
-  if(dorec.refSO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Customer Order: ${dorec.refSO}`, left, y); y += 8; }
+  y = pdfPartyBlock(doc, left, y, 'Sold To', dorec.client, addr, null, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null, custObj?custObj.phone:null);
+  if(addrDiffers(deliveryAddr, addr)){
+    y += 2;
+    y = pdfCheckPageBreak(doc, y, left, right, 'DELIVERY ORDER', dorec.num, dorec.date, 8+deliveryAddr.length*5);
+    y = pdfPartyBlock(doc, left, y, 'Deliver To', dorec.client, deliveryAddr);
+  }
+  if(dorec.refSO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Customer Order: ${dorec.refSO}`, left, y); y += 5; }
+  if(dorec.customerPO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Customer's PO No.: ${dorec.customerPO}`, left, y); y += 5; }
+  y += 3;
 
   doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
   doc.text('No', left, y); doc.text('Description', left+10, y);
@@ -4326,13 +4410,19 @@ function generateDOPDF(dorec){
     y += Math.max(6, descLines.length*4.2);
   });
   y += 2; doc.line(left, y, right, y);
-  y += 12;
-  y = pdfCheckPageBreak(doc, y, left, right, 'DELIVERY ORDER', dorec.num, dorec.date, 30);
+  y += 10;
+  if(dorec.remarks && dorec.remarks.trim()){
+    const remarkLines = doc.splitTextToSize(`Remarks: ${dorec.remarks}`, right-left);
+    y = pdfCheckPageBreak(doc, y, left, right, 'DELIVERY ORDER', dorec.num, dorec.date, remarkLines.length*4.4+8);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.text(remarkLines, left, y);
+    y += remarkLines.length*4.4 + 6;
+  }
+  y = pdfCheckPageBreak(doc, y, left, right, 'DELIVERY ORDER', dorec.num, dorec.date, 46);
   doc.setFont('helvetica','normal'); doc.setFontSize(8.5);
   const ackLines = doc.splitTextToSize('All goods received are deemed to be in good condition. If any damage is found, please return the goods immediately to the transporter or to us within 3 days upon receiving.', 170);
   doc.text(ackLines, left, y); y += ackLines.length*4 + 6;
   doc.text('Received the above goods in good order and condition.', left, y); y += 14;
-  doc.text('Please Chop, Sign & Return', left, y);
+  pdfSignatureRow(doc, left, y, ['Received by (Name)','Company Chop & Sign','Date']);
   pdfStampFixedFooter(doc, left, right);
   doc.save(`${safeFileName(dorec.num)}.pdf`);
 }
@@ -4345,11 +4435,19 @@ function generateInvoicePDF(inv){
   const left = 15, right = 195;
   const custObj = lookupCustomerByName(inv.client);
   const addr = (inv.addr && inv.addr.length) ? inv.addr : (custObj ? custObj.addr : []);
+  const deliveryAddr = (inv.deliveryAddr && inv.deliveryAddr.length) ? inv.deliveryAddr : ((custObj && custObj.deliveryAddr && custObj.deliveryAddr.length) ? custObj.deliveryAddr : []);
+  const attn = inv.attn || (custObj ? custObj.attn : null);
   let y = pdfLetterhead(doc, left, right, 18, 'INVOICE', inv.num, inv.date);
-  y = pdfPartyBlock(doc, left, y, 'Invoice To', inv.client, addr, null, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null);
+  y = pdfPartyBlock(doc, left, y, 'Invoice To', inv.client, addr, attn, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null, custObj?custObj.phone:null);
+  if(addrDiffers(deliveryAddr, addr)){
+    y += 2;
+    y = pdfCheckPageBreak(doc, y, left, right, 'INVOICE', inv.num, inv.date, 8+deliveryAddr.length*5);
+    y = pdfPartyBlock(doc, left, y, 'Deliver To', inv.client, deliveryAddr);
+  }
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
   if(inv.refDO){ doc.text(`Delivery Order: ${inv.refDO}`, left, y); y += 5; }
   if(inv.refProforma){ doc.text(`Proforma Invoice: ${inv.refProforma}`, left, y); y += 5; }
+  if(inv.customerPO){ doc.text(`Customer's PO No.: ${inv.customerPO}`, left, y); y += 5; }
   doc.text(`Term: ${inv.terms || '-'}`, left, y); y += 8;
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
@@ -4385,6 +4483,12 @@ function generateInvoicePDF(inv){
     y += 14;
   }
 
+  if(inv.remarks && inv.remarks.trim()){
+    const remarkLines = doc.splitTextToSize(`Remarks: ${inv.remarks}`, right-left);
+    y = pdfCheckPageBreak(doc, y, left, right, 'INVOICE', inv.num, inv.date, remarkLines.length*4.4+8);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(80); doc.text(remarkLines, left, y); doc.setTextColor(0);
+    y += remarkLines.length*4.4 + 6;
+  }
   y = pdfCheckPageBreak(doc, y, left, right, 'INVOICE', inv.num, inv.date, 30);
   doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.text('Bank Details:', left, y); y += 5;
   doc.setFont('helvetica','normal');
@@ -4406,7 +4510,7 @@ function generatePIPDF(pi){
   const supObj = lookupSupplierByName(pi.supplier);
   const addr = (pi.addr && pi.addr.length) ? pi.addr : (supObj ? supObj.addr : []);
   let y = pdfLetterhead(doc, left, right, 18, 'PURCHASE INVOICE', pi.num, pi.date);
-  y = pdfPartyBlock(doc, left, y, 'Supplier', pi.supplier, addr, null);
+  y = pdfPartyBlock(doc, left, y, 'Supplier', pi.supplier, addr, supObj?supObj.attn:null, null, null, supObj?supObj.phone:null);
   if(pi.refGR){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference GR: ${pi.refGR}`, left, y); y += 8; }
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
@@ -4482,7 +4586,7 @@ function generatePurchaseNotePDF(n){
   const addr = (n.addr && n.addr.length) ? n.addr : (supObj ? supObj.addr : []);
   const title = n.type==='CN' ? 'PURCHASE CREDIT NOTE' : 'PURCHASE DEBIT NOTE';
   let y = pdfLetterhead(doc, left, right, 18, title, n.num, n.date);
-  y = pdfPartyBlock(doc, left, y, 'Supplier', n.supplier, addr, null);
+  y = pdfPartyBlock(doc, left, y, 'Supplier', n.supplier, addr, supObj?supObj.attn:null, null, null, supObj?supObj.phone:null);
   if(n.refPI){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference Purchase Invoice: ${n.refPI}`, left, y); y += 6; }
   if(n.reason){ doc.text(`Reason: ${n.reason}`, left, y); y += 8; } else { y += 2; }
 
@@ -4571,7 +4675,7 @@ function generateSalesNotePDF(n){
   const addr = (n.addr && n.addr.length) ? n.addr : (custObj ? custObj.addr : []);
   const title = n.type==='CN' ? 'CREDIT NOTE' : 'DEBIT NOTE';
   let y = pdfLetterhead(doc, left, right, 18, title, n.num, n.date);
-  y = pdfPartyBlock(doc, left, y, 'To', n.client, addr, null, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null);
+  y = pdfPartyBlock(doc, left, y, 'To', n.client, addr, custObj?custObj.attn:null, custObj?custObj.buyerTin:null, custObj?custObj.buyerRegNo:null, custObj?custObj.phone:null);
   if(n.refInvoice){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference Invoice: ${n.refInvoice}`, left, y); y += 6; }
   if(n.reason){ doc.text(`Reason: ${n.reason}`, left, y); y += 8; } else { y += 2; }
 
@@ -4840,11 +4944,11 @@ function downloadSOAPDF(idx){
 }
 function downloadSOPDF(idx){
   const r = soRows[idx];
-  generateSOPDF({num:r.num, client:r.client, date:r.date, addr:r.addr||[], attn:r.attn||'', items:r.itemsFull||[{desc:r.items, qty:1, price:r.amt}], refQuotation:r.refQuotation});
+  generateSOPDF({num:r.num, client:r.client, date:r.date, addr:r.addr||[], attn:r.attn||'', customerPO:r.customerPO, items:r.itemsFull||[{desc:r.items, qty:1, price:r.amt}], refQuotation:r.refQuotation});
 }
 function downloadPOPDF(idx){
   const r = poRows[idx];
-  generatePOPDF({num:r.num, supplier:r.supplier, date:r.date, addr:r.addr||[], attn:r.attn||'', items:r.itemsFull||[{desc:'Items per PO', qty:1, price:r.amt}], refSO:r.refSO});
+  generatePOPDF({num:r.num, supplier:r.supplier, date:r.date, addr:r.addr||[], attn:r.attn||'', remarks:r.remarks, items:r.itemsFull||[{desc:'Items per PO', qty:1, price:r.amt}], refSO:r.refSO});
 }
 function downloadGRPDF(idx){
   const r = grRows[idx];
@@ -4852,11 +4956,11 @@ function downloadGRPDF(idx){
 }
 function downloadDOPDF(idx){
   const r = doRows[idx];
-  generateDOPDF({num:r.num, client:r.client, date:r.date, addr:r.addr||[], items:r.itemsFull||[{desc:r.items, qty:1, price:0}], refSO:r.refSO});
+  generateDOPDF({num:r.num, client:r.client, date:r.date, addr:r.addr||[], deliveryAddr:r.deliveryAddr, customerPO:r.customerPO, remarks:r.remarks, items:r.itemsFull||[{desc:r.items, qty:1, price:0}], refSO:r.refSO});
 }
 function downloadInvoicePDF(idx){
   const r = invoiceRows[idx];
-  generateInvoicePDF({num:r.num, client:r.client, date:r.date, addr:r.addr||[], items:r.itemsFull||[{desc:'Items per invoice', qty:1, price:r.amt}], refDO:r.refDO, refProforma:r.refProforma, terms:r.terms||'60 Days', depositApplied:r.depositApplied||0});
+  generateInvoicePDF({num:r.num, client:r.client, date:r.date, addr:r.addr||[], deliveryAddr:r.deliveryAddr, attn:r.attn, customerPO:r.customerPO, remarks:r.remarks, items:r.itemsFull||[{desc:'Items per invoice', qty:1, price:r.amt}], refDO:r.refDO, refProforma:r.refProforma, terms:r.terms||'60 Days', depositApplied:r.depositApplied||0});
 }
 const views = {
   dashboard(){
