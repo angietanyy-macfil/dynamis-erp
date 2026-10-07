@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>Dynamis Solutions — Console</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root{
@@ -155,6 +156,49 @@
   .kpi-delta{font-size:11px;font-weight:600;margin-top:8px;display:inline-block;}
   .kpi-delta.up{color:var(--green);}
   .kpi-delta.down{color:var(--red);}
+
+  /* ===== Dashboard KPI panels (Cash/Sales/Profit/Receivable/Payable) ===== */
+  .kpi-panel-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:22px;}
+  .kpi-panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px 18px 16px;}
+  .kpi-panel.flag{border-color:var(--red);}
+  .kpi-panel-label{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);margin-bottom:10px;}
+  .kpi-panel-value{font-size:23px;font-weight:700;line-height:1.1;}
+  .kpi-panel-value.flag{color:var(--red);}
+  .kpi-panel-sub{font-size:11.5px;color:var(--text-dim);margin-bottom:12px;}
+  .kpi-panel-rows{display:flex;flex-direction:column;gap:7px;border-top:1px solid var(--border);padding-top:10px;}
+  .kpi-panel-row{display:flex;justify-content:space-between;font-size:12.5px;gap:10px;}
+  .kpi-panel-row span:first-child{color:var(--text-dim);}
+  .kpi-panel-row span:last-child{font-weight:600;}
+  .txt-red{color:var(--red);}
+  .txt-green{color:var(--green);}
+
+  /* ===== Cash flow forecast ===== */
+  .fc-legend{display:flex;gap:16px;font-size:12px;color:var(--text-dim);}
+  .fc-legend span{display:inline-flex;align-items:center;gap:6px;}
+  .fc-dot{width:9px;height:9px;border-radius:2px;display:inline-block;}
+  .fc-dot.fc-in{background:var(--green);}
+  .fc-dot.fc-out{background:var(--red);}
+  .fc-weeks{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;padding:16px 20px 4px;align-items:end;}
+  .fc-week{display:flex;flex-direction:column;align-items:center;gap:7px;}
+  .fc-bars{display:flex;align-items:end;gap:4px;}
+  .fc-bar{width:15px;border-radius:3px 3px 0 0;}
+  .fc-bar.fc-in{background:var(--green);}
+  .fc-bar.fc-out{background:var(--red);}
+  .fc-label{font-size:11px;color:var(--text-dim);font-weight:600;}
+  .fc-closing{font-size:12px;font-weight:700;color:var(--gold);}
+
+  /* ===== Sales trend sparkline (inside the Sales KPI panel) ===== */
+  .spark-row{display:flex;align-items:end;gap:3px;height:34px;margin:10px 0 2px;}
+  .spark-bar{flex:1;background:var(--gold);border-radius:2px 2px 0 0;opacity:.75;min-height:2px;}
+  .spark-bar.cur{opacity:1;}
+  .spark-labels{display:flex;justify-content:space-between;font-size:9.5px;color:var(--text-dim);margin-bottom:10px;}
+
+  /* ===== Reminder panels (supplier deliveries, bank reconciliation) ===== */
+  .recon-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border);font-size:12.5px;}
+  .recon-row:last-child{border-bottom:none;}
+  .recon-pill{font-size:11px;font-weight:600;padding:3px 9px;border-radius:12px;}
+  .recon-pill.ok{background:var(--green-soft);color:var(--green);}
+  .recon-pill.overdue{background:var(--red-soft);color:var(--red);}
 
   /* ===== Tables/sections ===== */
   .panel{
@@ -618,6 +662,7 @@
     <button onclick="assistAsk('这个月收了什么货')">这个月收货</button>
     <button onclick="assistAsk('这个月 sales')">这个月 Sales</button>
     <button onclick="assistAsk('这个月 P&L')">P&amp;L</button>
+    <button onclick="assistAsk('this year P&L')">Year P&amp;L</button>
     <button onclick="assistAsk('我们欠供应商多少')">欠供应商</button>
     <button onclick="assistAsk('哪些 overdue')">哪些 overdue</button>
     <button onclick="assistAsk('What was last month sales?')">Last month sales</button>
@@ -808,15 +853,167 @@ function isOverdue(doc, kind){ return daysOverdue(doc,kind)>0; }
 function displayStatus(doc, kind){
   if(outstandingOf(doc,kind)<=0.005) return 'Paid';
   const partial = (doc.paidAmt||0)>0.005;
-  if(isOverdue(doc,kind)) return partial ? 'Partial Payment · Overdue' : 'Overdue';
+  if(isOverdue(doc,kind)) return 'Overdue';   // past due date = Overdue, whether or not part has been paid
   return partial ? 'Partial Payment' : 'Open';
 }
 function recalcStatus(doc, kind){
   const out = outstandingOf(doc,kind);
   doc.status = out<=0.005 ? 'Paid' : ((doc.paidAmt||0)>0.005 ? 'Partial Payment' : 'Open');
 }
+// All OR numbers that paid this invoice (normal receipts AND deposits taken earlier on the quotation)
+function invoiceORs(iv){
+  const q = quoteRows.find(x=>x.invNum===iv.num);
+  return orRows.filter(o=> orAllocs(o).some(a=>a.inv===iv.num) || (o.type==='deposit' && q && o.refQuotation===q.num && (iv.depositApplied||0)>0))
+    .map(o=>o.num+(o.type==='deposit'?' (deposit)':''));
+}
+function piPVs(pi){ return pvRows.filter(v=>pvAllocs(v).some(a=>a.pi===pi.num)).map(v=>v.num); }
 function orAllocs(o){ return o.allocations || ((o.refInvoice && o.type!=='deposit') ? [{inv:o.refInvoice, amt:o.amt}] : []); }
 function pvAllocs(p){ return p.allocations || (p.refPI ? [{pi:p.refPI, amt:p.amt}] : []); }
+
+
+// ---------- Dashboard: cash position, YTD sales, receivable/payable detail, cash flow forecast ----------
+function cashPositionNow(){
+  const tot = accountTotals();
+  const cashInHand = ((tot['1000']||{dr:0,cr:0}).dr) - ((tot['1000']||{dr:0,cr:0}).cr);
+  const banks = bankAccounts().filter(a=>a.code!=='1000');
+  let bankTotal = 0;
+  const bankRows = banks.map(a=>{ const t=tot[a.code]||{dr:0,cr:0}; const bal=t.dr-t.cr; bankTotal+=bal; return {name:a.name, bal}; });
+  return {cashInHand, bankTotal, bankRows, total: cashInHand+bankTotal};
+}
+function ytdSalesCompare(){
+  const today = todayISO();
+  const fyStart = fyStartOf(today);
+  const ytdSales = invoiceRows.filter(iv=>iv.date>=fyStart && iv.date<=today).reduce((s,iv)=>s+iv.amt,0);
+  const lyStart = isoOf((()=>{ const d=localDate(fyStart); d.setFullYear(d.getFullYear()-1); return d; })());
+  const lyEnd = isoOf((()=>{ const d=localDate(today); d.setFullYear(d.getFullYear()-1); return d; })());
+  const lastYearYtd = invoiceRows.filter(iv=>iv.date>=lyStart && iv.date<=lyEnd).reduce((s,iv)=>s+iv.amt,0);
+  const pct = lastYearYtd>0 ? (ytdSales-lastYearYtd)/lastYearYtd*100 : null;
+  return {ytdSales, lastYearYtd, pct, fyStart};
+}
+function receivableDetail(){
+  const overdueInv = invoiceRows.filter(iv=>isOverdue(iv,'inv'));
+  const over90 = new Set();
+  overdueInv.forEach(iv=>{ if(daysOverdue(iv,'inv')>90) over90.add(iv.client); });
+  const overdueCustomers = new Set(overdueInv.map(iv=>iv.client));
+  return {overdueCustomerCount: overdueCustomers.size, over90Count: over90.size};
+}
+function payableDetail(){
+  const today = new Date(); today.setHours(0,0,0,0);
+  const dueNext30 = piRows.filter(pi=>{
+    const out = outstandingOf(pi,'pi'); if(out<=0.005 || isOverdue(pi,'pi')) return false;
+    const diff = Math.round((dueDateOf(pi,'pi')-today)/86400000);
+    return diff>=0 && diff<=30;
+  }).reduce((s,pi)=>s+outstandingOf(pi,'pi'),0);
+  return {dueNext30};
+}
+function cashFlowForecast(weeksAhead){
+  weeksAhead = weeksAhead || 6;
+  const pos = cashPositionNow();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const arOpen = invoiceRows.filter(iv=>outstandingOf(iv,'inv')>0.005);
+  const apOpen = piRows.filter(pi=>outstandingOf(pi,'pi')>0.005);
+  const weeks = [];
+  let running = pos.total;
+  for(let w=0; w<weeksAhead; w++){
+    const start = new Date(today); start.setDate(start.getDate()+w*7);
+    const end = new Date(today); end.setDate(end.getDate()+(w+1)*7-1);
+    const inAmt = arOpen.filter(iv=>{ const d=dueDateOf(iv,'inv'); return w===0 ? d<=end : (d>=start && d<=end); }).reduce((s,iv)=>s+outstandingOf(iv,'inv'),0);
+    const outAmt = apOpen.filter(pi=>{ const d=dueDateOf(pi,'pi'); return w===0 ? d<=end : (d>=start && d<=end); }).reduce((s,pi)=>s+outstandingOf(pi,'pi'),0);
+    running = running + inAmt - outAmt;
+    weeks.push({label:`${String(start.getDate()).padStart(2,'0')} ${start.toLocaleString('en-US',{month:'short'})}`, cashIn:inAmt, cashOut:outAmt, closing:running});
+  }
+  return {opening: pos.total, weeks};
+}
+
+
+// ---------- Excel export (P&L) ----------
+function plToSheetRows(x, label){
+  const rows = [];
+  rows.push(['Dynamis Solutions Sdn Bhd']);
+  rows.push(['Profit & Loss Statement']);
+  rows.push([label]);
+  rows.push([]);
+  rows.push(['', 'RM']);
+  rows.push(['Revenue']);
+  x.revenue.forEach(r=>rows.push([`  ${r.code}  ${r.name}`, r.amt]));
+  rows.push(['Total revenue', x.totalRevenue]);
+  rows.push([]);
+  rows.push(['Cost of sales']);
+  x.cogs.forEach(r=>rows.push([`  ${r.code}  ${r.name}`, r.amt]));
+  rows.push(['Total cost of sales', x.totalCogs]);
+  rows.push([]);
+  rows.push(['Gross profit', x.grossProfit]);
+  if(x.other.length){
+    rows.push([]); rows.push(['Other income']);
+    x.other.forEach(r=>rows.push([`  ${r.code}  ${r.name}`, r.amt]));
+    rows.push(['Total other income', x.totalOther]);
+  }
+  rows.push([]);
+  rows.push(['Expenses']);
+  x.exp.forEach(r=>rows.push([`  ${r.code}  ${r.name}`, r.amt]));
+  rows.push(['Total expenses', x.totalExp]);
+  rows.push([]);
+  rows.push(['Profit / (loss) before tax', x.pbt]);
+  if(x.tax.length) x.tax.forEach(r=>rows.push([`  ${r.code}  ${r.name}`, r.amt]));
+  rows.push([]);
+  rows.push(['Net profit / (loss) for the period', x.net]);
+  return rows;
+}
+function downloadPLExcel(fromISO, toISO, label){
+  if(typeof XLSX==='undefined'){ alert('Excel library did not load — check your connection and try again.'); return; }
+  const x = buildPL(fromISO, toISO);
+  const rows = plToSheetRows(x, `${label} (${fmtDate(fromISO)} to ${fmtDate(toISO)})`);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:42},{wch:16}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'P&L');
+  XLSX.writeFile(wb, `${safeFileName('PL_'+label.replace(/[^A-Za-z0-9]+/g,'_'))}.xlsx`);
+}
+
+
+// ---------- Top debtors, DSO, sales trend, supplier delivery & bank-rec reminders ----------
+function topDebtors(n){
+  return groupOutstanding(invoiceRows, 'client', 'inv').slice(0, n||5);
+}
+function dsoDays(){
+  const t = new Date(); t.setHours(0,0,0,0);
+  const from = new Date(t); from.setDate(from.getDate()-90);
+  const fromISO = isoOf(from), toISO = isoOf(t);
+  const salesLast90 = invoiceRows.filter(iv=>iv.date>=fromISO && iv.date<=toISO).reduce((s,iv)=>s+iv.amt,0);
+  const totalAR = invoiceRows.reduce((s,iv)=>s+outstandingOf(iv,'inv'),0);
+  if(salesLast90<=0) return null;
+  return Math.round(totalAR/salesLast90*90);
+}
+function salesTrend6(){
+  const out = [];
+  const now = new Date();
+  for(let i=5;i>=0;i--){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    const from = isoOf(d);
+    const to = isoOf(new Date(d.getFullYear(), d.getMonth()+1, 0));
+    const amt = invoiceRows.filter(iv=>iv.date>=from && iv.date<=to).reduce((s,iv)=>s+iv.amt,0);
+    out.push({label:d.toLocaleString('en-US',{month:'short'}), amt});
+  }
+  return out;
+}
+function overdueSupplierDeliveries(){
+  const t = new Date(); t.setHours(0,0,0,0);
+  return poRows.filter(po=>{
+    if(!po.expectedDelivery) return false;
+    const received = grRows.some(g=>g.refPO===po.num);
+    return !received && localDate(po.expectedDelivery) < t;
+  }).map(po=>({...po, daysLate: Math.round((t-localDate(po.expectedDelivery))/86400000)}))
+    .sort((a,b)=>b.daysLate-a.daysLate);
+}
+function bankReconStatus(){
+  const t = new Date(); t.setHours(0,0,0,0);
+  return bankAccounts().map(a=>{
+    const entries = recHistory.filter(h=>h.acct===a.code);
+    const last = entries.length ? entries.reduce((latest,h)=> h.date>latest.date?h:latest, entries[0]) : null;
+    const daysSince = last ? Math.round((t-localDate(last.date))/86400000) : null;
+    return {code:a.code, name:a.name, lastDate:last?last.date:null, daysSince, overdue: daysSince===null || daysSince>30};
+  });
+}
 
 function isSameMonth(dateStr, ref){
   const d = new Date(dateStr);
@@ -885,7 +1082,7 @@ function searchAll(text){
   suppliers.forEach(x=>add('Supplier',x.id,x.name,'',null,[x.attn,x.phone,x.email,x.agent,(x.addr||[]).join(' '),x.terms].join(' ')));
   accounts.forEach(x=>add('Account',x.code,x.name,'',null,[x.type,x.bank?'bank cash':''].join(' ')));
   journals.forEach(x=>add('Journal Entry',x.no,x.desc,x.date,x.lines.reduce((t,l)=>t+(l.dr||0),0),x.lines.map(l=>accountLabel(l.acct)+' '+(l.memo||'')).join(' ')));
-  cashBookRows.forEach(x=>add('Cash Book '+x.type,x.no,x.desc,x.date,x.amt,[x.ref,accountLabel(x.bank),accountLabel(x.contra)].join(' ')));
+  cashBookRows.forEach(x=>add('Cash Book '+x.type,x.no,x.desc,x.date,x.amt,[x.ref,x.payTo,accountLabel(x.bank),accountLabel(x.contra)].join(' ')));
   const hits = recs.filter(r=>tokens.every(t=>r.hay.includes(t)));
   const label = tokens.join(' ');
   if(!hits.length) return {count:0, html:`Nothing found for “${escapeHtml(label)}”.`};
@@ -903,6 +1100,13 @@ function answerQuestion(text){
   const ref = new Date(); if(lastMonth) ref.setMonth(ref.getMonth()-1, 1);
   const m = computeMonthMetrics(ref);
   const monthName = ref.toLocaleString('en-US',{month:'long', year:'numeric'});
+  const lastYear = has('last year','去年','previous year') && !lastMonth;
+  const wantsYear = has('this year','整年','全年','今年','whole year','full year','annual','ytd','year to date','year-to-date') || lastYear;
+  const yearFrom = lastYear ? isoOf((()=>{ const d=localDate(fyStartOf(todayISO())); d.setFullYear(d.getFullYear()-1); return d; })())
+                             : fyStartOf(todayISO());
+  const yearTo = lastYear ? isoOf((()=>{ const d=localDate(fyStartOf(todayISO())); d.setDate(d.getDate()-1); return d; })())
+                          : todayISO();
+  const yearLabel = lastYear ? fyLabel(yearFrom) : fyLabel(todayISO()) + ' (to date)';
   const wantsSupplier = has('供应商','supplier','vendor','payable','应付','我们欠','欠他','creditor') || re(/\bwe owe\b/);
   const wantsCustomer = has('顾客','客户','customer','debtor');
   const goodsWord = has('goods','item','stock','material','product','parts','equipment','supplies');
@@ -957,12 +1161,28 @@ function answerQuestion(text){
     return `<b>Received from customers in ${monthName}: RM ${fmt2(rows.reduce((t,o)=>t+o.amt,0))}</b>` + assistTable(['OR','Customer','Date','Amount (RM)'], rows.map(o=>[o.num, o.client, fmtDate(o.date), fmt2(o.amt)]));
   }
   if(has('p&l','pnl','利润','profit','盈亏','赚','margin','net income') || re(/\bloss\b/)){
-    return `<b>${monthName} (gross)</b>` + assistTable(['',''], [
-      ['Sales (invoices in the month)', 'RM '+fmt2(m.salesThisMonth)],
-      ['Cost of goods (purchase invoices in the month)', 'RM '+fmt2(m.cogsThisMonth)],
-      ['<b>Gross profit</b>', '<b>RM '+fmt2(m.grossProfit)+'</b>'],
-      ['Gross margin', m.margin.toFixed(1)+'%'],
-    ]) + '<div class="assist-note">This is gross profit. For the full Profit &amp; Loss with expenses, open Financial Reports.</div>';
+    const dlBtn = (f,t,lbl)=> `<button class="pdf-btn" style="margin-top:8px" onclick="downloadPLExcel('${f}','${t}','${lbl.replace(/'/g,"\\'")}')">Download Excel</button>`;
+    if(wantsYear){
+      const x = buildPL(yearFrom, yearTo);
+      return `<b>${yearLabel} — ${fmtDate(yearFrom)} to ${fmtDate(yearTo)}</b>` + assistTable(['',''], [
+        ['Revenue', 'RM '+fmt2(x.totalRevenue)],
+        ['Cost of sales', 'RM '+fmt2(x.totalCogs)],
+        ['<b>Gross profit</b>', '<b>RM '+fmt2(x.grossProfit)+'</b>'],
+        ['Expenses', 'RM '+fmt2(x.totalExp)],
+        ['<b>Net profit</b>', '<b>RM '+fmt2(x.net)+'</b>'],
+      ]) + dlBtn(yearFrom, yearTo, yearLabel) +
+      '<div class="assist-note">Full year-to-date figures including operating expenses — same numbers as Financial Reports → Profit &amp; Loss.</div>';
+    }
+    const monthFrom = ref.toISOString().slice(0,8)+'01', monthTo = isSameMonth(todayISO(),ref) ? todayISO() : isoOf((()=>{ const d=new Date(ref.getFullYear(),ref.getMonth()+1,0); return d; })());
+    const xm = buildPL(monthFrom, monthTo);
+    return `<b>${monthName}</b>` + assistTable(['',''], [
+      ['Sales (invoices in the month)', 'RM '+fmt2(xm.totalRevenue)],
+      ['Cost of goods (purchase invoices in the month)', 'RM '+fmt2(xm.totalCogs)],
+      ['<b>Gross profit</b>', '<b>RM '+fmt2(xm.grossProfit)+'</b>'],
+      ['Expenses', 'RM '+fmt2(xm.totalExp)],
+      ['<b>Net profit</b>', '<b>RM '+fmt2(xm.net)+'</b>'],
+    ]) + dlBtn(monthFrom, monthTo, monthName) +
+    '<div class="assist-note">Ask for “this year P&amp;L” or “last year P&amp;L” for the full-year figures, or open Financial Reports for Trial Balance / Balance Sheet.</div>';
   }
   if(has('sales','销售','营业额','卖了','开票','invoiced','业绩','revenue','turnover') || re(/\bsold\b/) || re(/\bhow much (did|have) we sell\b/)){
     return `<b>${monthName} sales: RM ${fmt2(m.salesThisMonth)}</b> from ${m.invoicesThisMonth.length} invoice(s).` +
@@ -1411,6 +1631,7 @@ function openPOEditForm(i){
       <div class="form-field"><label>Date</label><input id="f-date" type="date" class="form-input" value="${r.date}"></div>
     </div>
     <div class="form-field full"><label>Supplier</label><div class="form-static">${r.supplier}</div></div>
+    <div class="form-field full"><label>Expected Delivery Date</label><input id="f-expected-delivery" type="date" class="form-input" value="${r.expectedDelivery||''}"></div>
     <div class="form-field full"><label>Remarks</label><textarea id="f-remarks" class="form-input" rows="2">${r.remarks||''}</textarea></div>`;
   document.getElementById('content').innerHTML = docFormShell('Edit Purchase Order', 'po', header, `savePOEdit(${i})`, 'Save Changes');
   document.getElementById('page-title').textContent = 'Edit Purchase Order';
@@ -1421,10 +1642,11 @@ function savePOEdit(i){
   const r = poRows[i];
   const date = document.getElementById('f-date').value;
   const remarks = document.getElementById('f-remarks').value.trim();
+  const expectedDelivery = document.getElementById('f-expected-delivery').value;
   const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
-  poRows[i] = {...r, date, amt, itemsFull:items, remarks};
+  poRows[i] = {...r, date, amt, itemsFull:items, remarks, expectedDelivery};
   render('po');
 }
 
@@ -1644,8 +1866,8 @@ function glPostings(){
   });
   cashBookRows.forEach(c=>{
     const rc = c.type==='Receipt';
-    add(`CB:${c.no}:1`, c.date, rc?c.bank:c.contra, c.amt, 0, c.desc, c.no, 'Cash Book', c.ref);
-    add(`CB:${c.no}:2`, c.date, rc?c.contra:c.bank, 0, c.amt, c.desc, c.no, 'Cash Book', c.ref);
+    add(`CB:${c.no}:1`, c.date, rc?c.bank:c.contra, c.amt, 0, c.desc, c.no, 'Cash Book', c.ref, c.payTo||'');
+    add(`CB:${c.no}:2`, c.date, rc?c.contra:c.bank, 0, c.amt, c.desc, c.no, 'Cash Book', c.ref, c.payTo||'');
   });
   journals.forEach(j=>j.lines.forEach((l,i)=> add(`JV:${j.no}:${i}`, j.date, l.acct, l.dr, l.cr, l.memo||j.desc, j.no, 'Journal')));
   return P.sort((a,b)=> (localDate(a.date)-localDate(b.date)) || ((a.source==='Opening Balance'?0:1)-(b.source==='Opening Balance'?0:1)) || (a.id<b.id?-1:1));
@@ -1826,19 +2048,48 @@ function renderAccountLedger(){
 // ----- Cash Book -----
 let cbAccount = ACC.bank;
 function cbSelect(v){ cbAccount = v; render('cashbook'); }
-function renderCashBook(){
-  const banks = bankAccounts();
-  if(!banks.some(b=>b.code===cbAccount)) cbAccount = banks[0] ? banks[0].code : '';
+let cbF = {q:'', type:'', source:'', from:'', to:''};
+function cbRowsHTML(){
   const posts = glPostings().filter(p=>p.acct===cbAccount);
   let bal = 0;
-  const rows = posts.map(p=>{
-    bal += p.debit - p.credit;
+  const all = posts.map(p=>{ bal += p.debit - p.credit; return {p, bal}; });
+  const q = cbF.q.trim().toLowerCase();
+  const list = all.filter(({p})=>{
+    if(cbF.type==='Receipt' && !p.debit) return false;
+    if(cbF.type==='Payment' && !p.credit) return false;
+    if(cbF.source){
+      const grp = p.source==='Receipt' ? 'OR' : p.source==='Payment' ? 'PV' : p.source==='Cash Book' ? 'CB' : 'Other';
+      if(grp!==cbF.source) return false;
+    }
+    if(cbF.from && p.date<cbF.from) return false;
+    if(cbF.to && p.date>cbF.to) return false;
+    if(q){
+      const hay=[p.date,fmtDate(p.date),p.ref,p.chq,p.party,p.desc,p.source,fmt2(p.debit||p.credit),String(p.debit||p.credit)].join(' ').toLowerCase();
+      if(!q.split(/\s+/).every(t=>hay.includes(t))) return false;
+    }
+    return true;
+  }).reverse();   // newest on top; balances were computed oldest-first
+  const rows = list.map(({p,bal})=>{
     const ci = p.source==='Cash Book' ? cashBookRows.findIndex(c=>c.no===p.ref) : -1;
-    return `<tr><td class="cell-dim">${fmtDate(p.date)}</td><td class="cell-dim">${escapeHtml(p.ref)}</td><td>${escapeHtml(p.desc)}</td><td class="cell-dim">${p.source}</td>
+    const who = p.party ? `<b>${escapeHtml(p.party)}</b>` : '<span class="cell-dim">—</span>';
+    return `<tr><td class="cell-dim">${fmtDate(p.date)}</td><td class="cell-dim">${escapeHtml(p.ref)}</td><td>${who}</td><td>${escapeHtml(p.desc)}</td><td class="cell-dim">${p.source}</td>
       <td>${p.debit?fmt2(p.debit):''}</td><td>${p.credit?fmt2(p.credit):''}</td><td class="cell-strong">${fmt2(bal)}</td>
       <td>${reconciled[p.id]?'<span class="alloc-ok">✓</span>':''}</td>
       <td class="row-actions">${ci>=0?`<button class="pdf-btn" onclick="downloadCashBookPDF(${ci})">PDF</button><button class="pdf-btn" onclick="openCashBookForm(null,${ci})">Edit</button><button class="pdf-btn danger-btn" onclick="deleteCashBook(${ci})">Delete</button>`:'<span class="cell-dim">from '+p.source+'</span>'}</td></tr>`;
-  }).join('') || '<tr><td colspan="9" class="cell-dim">No entries yet.</td></tr>';
+  }).join('') || '<tr><td colspan="10" class="cell-dim">No entries found.</td></tr>';
+  return {rows, shown:list.length, total:all.length};
+}
+function cbRefresh(){
+  const r = cbRowsHTML();
+  const tb=document.getElementById('cb-tbody'); if(tb) tb.innerHTML=r.rows;
+  const c=document.getElementById('cb-count'); if(c) c.textContent = r.shown===r.total ? `${r.total} entries` : `${r.shown} of ${r.total} entries`;
+}
+function cbSetFilter(k,v){ cbF[k]=v; cbRefresh(); }
+function cbClearFilters(){ cbF={q:'',type:'',source:'',from:'',to:''}; render('cashbook'); }
+function renderCashBook(){
+  const banks = bankAccounts();
+  if(!banks.some(b=>b.code===cbAccount)) cbAccount = banks[0] ? banks[0].code : '';
+  const r = cbRowsHTML();
   return `
     <div class="panel">
       <div class="panel-head">
@@ -1851,13 +2102,29 @@ function renderCashBook(){
         </div>
       </div>
       <div class="form-body" style="padding-bottom:6px">
-        <div class="form-field" style="max-width:360px"><label>Account</label>
-          <select class="form-input" onchange="cbSelect(this.value)">${banks.map(b=>`<option value="${b.code}" ${b.code===cbAccount?'selected':''}>${b.code} — ${escapeHtml(b.name)}</option>`).join('')}</select>
+        <div class="form-grid">
+          <div class="form-field"><label>Account</label>
+            <select class="form-input" onchange="cbSelect(this.value)">${banks.map(b=>`<option value="${b.code}" ${b.code===cbAccount?'selected':''}>${b.code} — ${escapeHtml(b.name)}</option>`).join('')}</select>
+          </div>
+          <div class="form-field"><label>Search (ref, name, description, amount…)</label>
+            <input class="form-input" value="${escapeAttr(cbF.q)}" oninput="cbSetFilter('q',this.value)" placeholder="Type to search…">
+          </div>
         </div>
+        <div class="form-grid" style="grid-template-columns:repeat(4,1fr)">
+          <div class="form-field"><label>Show</label>
+            <select class="form-input" onchange="cbSetFilter('type',this.value)">
+              <option value="">All</option><option value="Receipt" ${cbF.type==='Receipt'?'selected':''}>Receipts (money in)</option><option value="Payment" ${cbF.type==='Payment'?'selected':''}>Payments (money out)</option></select></div>
+          <div class="form-field"><label>Source</label>
+            <select class="form-input" onchange="cbSetFilter('source',this.value)">
+              <option value="">All</option><option value="CB" ${cbF.source==='CB'?'selected':''}>Cash Book entries (CB)</option><option value="OR" ${cbF.source==='OR'?'selected':''}>Customer receipts (OR)</option><option value="PV" ${cbF.source==='PV'?'selected':''}>Supplier payments (PV)</option><option value="Other" ${cbF.source==='Other'?'selected':''}>Journal / Opening</option></select></div>
+          <div class="form-field"><label>From</label><input type="date" class="form-input" value="${cbF.from}" onchange="cbSetFilter('from',this.value)"></div>
+          <div class="form-field"><label>To</label><input type="date" class="form-input" value="${cbF.to}" onchange="cbSetFilter('to',this.value)"></div>
+        </div>
+        <p class="section-note" style="margin:6px 0 0"><span id="cb-count">${r.shown===r.total?r.total+' entries':r.shown+' of '+r.total+' entries'}</span> · newest on top · <a href="#" onclick="cbClearFilters();return false">clear filters</a></p>
       </div>
       <table>
-        <thead><tr><th>Date</th><th>Ref</th><th>Description</th><th>Source</th><th>Receipt (RM)</th><th>Payment (RM)</th><th>Balance (RM)</th><th>Rec'd</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
+        <thead><tr><th>Date</th><th>Ref</th><th>Pay to / Received from</th><th>Description</th><th>Source</th><th>Receipt (RM)</th><th>Payment (RM)</th><th>Balance (RM)</th><th>Rec'd</th><th></th></tr></thead>
+        <tbody id="cb-tbody">${r.rows}</tbody>
       </table>
     </div>
     <p class="section-note">Customer receipts (OR) and supplier payments (PV) appear here automatically. Use “+ Receipt / + Payment” for everything else — rent, salaries, bank charges, other income and so on.</p>`;
@@ -1881,7 +2148,7 @@ function openCashBookForm(type, editIdx){
         </div>
         <div class="form-grid">
           <div class="form-field"><label>Type</label>
-            <select id="cb-type" class="form-input"><option value="Receipt" ${t==='Receipt'?'selected':''}>Receipt — money in</option><option value="Payment" ${t==='Payment'?'selected':''}>Payment — money out</option></select>
+            <select id="cb-type" class="form-input" onchange="document.getElementById('cb-party-label').textContent=this.value==='Receipt'?'Received from':'Pay to'"><option value="Receipt" ${t==='Receipt'?'selected':''}>Receipt — money in</option><option value="Payment" ${t==='Payment'?'selected':''}>Payment — money out</option></select>
           </div>
           <div class="form-field"><label>Bank / cash account</label>
             <select id="cb-bank" class="form-input">${bankAccountOptions(bank)}</select>
@@ -1894,6 +2161,7 @@ function openCashBookForm(type, editIdx){
           <div class="form-field"><label>Amount (RM)</label><input id="cb-amt" type="number" step="0.01" min="0" class="form-input" value="${editing?Number(editing.amt).toFixed(2):''}"></div>
           <div class="form-field"><label>Reference (cheque / transaction no.)</label><input id="cb-ref" class="form-input" value="${editing?escapeAttr(editing.ref||''):''}"></div>
         </div>
+        <div class="form-field full"><label id="cb-party-label">${t==='Receipt'?'Received from':'Pay to'}</label><input id="cb-party" class="form-input" value="${editing?escapeAttr(editing.payTo||''):''}" placeholder="e.g. landlord, TNB, staff name…"></div>
         <div class="form-field full"><label>Description</label><input id="cb-desc" class="form-input" value="${editing?escapeAttr(editing.desc||''):''}" placeholder="e.g. Office rent — September 2026"></div>
         <div class="form-actions">
           <button class="save-btn" onclick="saveCashBook(${editIdx==null?'null':editIdx})">${editing?'Save Changes':'Save Entry'}</button>
@@ -1916,7 +2184,7 @@ function saveCashBook(editIdx){
   if(!contra){ alert('Please choose the other side of the entry (search and pick an account).'); return; }
   if(contra===bank){ alert('The other side of the entry cannot be the same bank account.'); return; }
   if(amt<=0){ alert('Please enter the amount.'); return; }
-  const rec = {no, date, type, bank, contra, amt, ref:document.getElementById('cb-ref').value.trim(), desc:document.getElementById('cb-desc').value.trim() || (type==='Receipt'?'Receipt':'Payment')};
+  const rec = {no, date, type, bank, contra, amt, ref:document.getElementById('cb-ref').value.trim(), payTo:document.getElementById('cb-party').value.trim(), desc:document.getElementById('cb-desc').value.trim() || (type==='Receipt'?'Receipt':'Payment')};
   if(editing){ cashBookRows[editIdx] = rec; }
   else { cashBookRows.push(rec); bumpNumber('cb', date); }
   cbAccount = bank;
@@ -2476,6 +2744,7 @@ function renderReports(){
       <div class="panel-head">
         <p class="panel-title">${rptTitle()} — ${rptSubtitle()}</p>
         <button class="new-btn" onclick="downloadReportPDF()">Print / Download PDF</button>
+        ${rpt.type==='pl' ? `<button class="pdf-btn" onclick="downloadPLExcel('${rpt.from}','${rpt.to}','${rptSubtitle().replace(/'/g,"\\'")}')">Download Excel</button>` : ''}
       </div>
       <div class="form-body" style="padding-bottom:8px">
         <div class="head-actions" style="margin-bottom:12px;flex-wrap:wrap">${tab('gl','General Ledger')}${tab('tb','Trial Balance')}${tab('pl','Profit & Loss')}${tab('bs','Balance Sheet')}</div>
@@ -3155,7 +3424,8 @@ function openPOFormFromFlow(quoteNum){
       </div>
       <div class="form-field"><label>Reference Sales Order</label><div class="form-static">${q.soNum || q.num}</div></div>
     </div>
-    <div class="form-field full"><label>Remarks <span class="cell-dim" style="font-weight:400">(e.g. requested delivery date)</span></label><textarea id="f-remarks" class="form-input" rows="2" placeholder="e.g. Please deliver by 15 Oct 2026"></textarea></div>
+    <div class="form-field full"><label>Expected Delivery Date <span class="cell-dim" style="font-weight:400">(optional — lets the Dashboard remind you if the supplier is late)</span></label><input id="f-expected-delivery" type="date" class="form-input"></div>
+    <div class="form-field full"><label>Remarks</label><textarea id="f-remarks" class="form-input" rows="2" placeholder="e.g. Please deliver before 10am, loading bay at the back"></textarea></div>
     <p class="section-note">Item descriptions and quantities are carried over from the Sales Order — prices start at RM 0 since your cost from the supplier is separate from the customer's price. Key in the actual supplier price per item.</p>`;
   document.getElementById('content').innerHTML = docFormShell('Create Purchase Order', 'flow', header, `savePOFromFlow('${q.num}')`, 'Save Purchase Order');
   document.getElementById('page-title').textContent = 'Create Purchase Order';
@@ -3174,12 +3444,13 @@ function savePOFromFlow(quoteNum){
   if(items.length===0){ alert('Please add at least one item.'); return; }
   const amt = items.reduce((s,it)=>s+it.qty*it.price,0);
   const remarks = document.getElementById('f-remarks').value.trim();
-  poRows.unshift({num, supplier:supplier.name, date, amt, status:'Open', itemsFull:items, addr:supplier.addr, attn:supplier.attn, remarks, refSO:q.soNum||q.num});
+  const expectedDelivery = document.getElementById('f-expected-delivery').value;
+  poRows.unshift({num, supplier:supplier.name, date, amt, status:'Open', itemsFull:items, addr:supplier.addr, attn:supplier.attn, remarks, expectedDelivery, refSO:q.soNum||q.num});
   bumpNumber('po', date);
   q.poNum = num;
   q.poSupplier = supplier.name;
   q.stage = 'gr';
-  generatePOPDF({num, supplier:supplier.name, date, addr:supplier.addr, attn:supplier.attn, remarks, items, refSO:q.soNum||q.num});
+  generatePOPDF({num, supplier:supplier.name, date, addr:supplier.addr, attn:supplier.attn, remarks, expectedDelivery, items, refSO:q.soNum||q.num});
   render('flow');
 }
 
@@ -3289,6 +3560,24 @@ function saveDeliveryFromFlow(quoteNum){
   }, 500);
   render('flow');
 }
+let flowPeriod = 'month';
+function flowSetPeriod(v){ flowPeriod=v; render('flow'); }
+// date a deal was finished: delivery date for delivered orders, quotation date otherwise
+function flowCloseDate(q){
+  const d = q.doNum ? doRows.find(x=>x.num===q.doNum) : null;
+  return (q.outcome==='won' && d && d.date) ? d.date : q.date;
+}
+function flowInPeriod(q){
+  if(flowPeriod==='all') return true;
+  const dt = flowCloseDate(q); if(!dt) return true;
+  const t = new Date(); t.setHours(0,0,0,0);
+  const d = localDate(dt);
+  if(flowPeriod==='month') return d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth();
+  if(flowPeriod==='last'){ const l=new Date(t.getFullYear(),t.getMonth()-1,1); return d.getFullYear()===l.getFullYear() && d.getMonth()===l.getMonth(); }
+  if(flowPeriod==='3m') return d >= new Date(t.getFullYear(),t.getMonth()-2,1);
+  if(flowPeriod==='year') return d.getFullYear()===t.getFullYear();
+  return true;
+}
 function renderFlowBoard(){
   const cols = [
     {key:'quotation', title:'Quotation Sent', filter:q=>q.outcome==='pending'},
@@ -3297,24 +3586,33 @@ function renderFlowBoard(){
     {key:'po', title:'PO to Supplier', filter:q=>q.outcome==='won'&&q.stage==='po'},
     {key:'gr', title:'Goods Received', filter:q=>q.outcome==='won'&&q.stage==='gr'},
     {key:'delivery', title:'DO & Invoice', filter:q=>q.outcome==='won'&&q.stage==='delivery'},
-    {key:'delivered', title:'Delivered ✓', filter:q=>q.outcome==='won'&&q.stage==='delivered'},
+    {key:'delivered', title:'Delivered ✓', filter:q=>q.outcome==='won'&&q.stage==='delivered'&&flowInPeriod(q)},
   ];
-  const closedLost = quoteRows.filter(q=>q.outcome==='lost'||q.outcome==='declined');
+  const closedLost = quoteRows.filter(q=>(q.outcome==='lost'||q.outcome==='declined')&&flowInPeriod(q));
 
   // Pipeline stats
   const openDeals = quoteRows.filter(q=>q.outcome==='pending' || (q.outcome==='won' && q.stage!=='delivered'));
   const openValue = openDeals.reduce((s,q)=>s+q.amt,0);
-  const wonCount = quoteRows.filter(q=>q.outcome==='won').length;
-  const lostCount = quoteRows.filter(q=>q.outcome==='lost'||q.outcome==='declined').length;
+  const inP = quoteRows.filter(q=>q.outcome==='pending' ? true : flowInPeriod(q));
+  const wonCount = inP.filter(q=>q.outcome==='won').length;
+  const lostCount = inP.filter(q=>q.outcome==='lost'||q.outcome==='declined').length;
   const winRate = (wonCount+lostCount)>0 ? Math.round(wonCount/(wonCount+lostCount)*100) : 0;
-  const closedWonValue = quoteRows.filter(q=>q.outcome==='won'&&q.stage==='delivered').reduce((s,q)=>s+q.amt,0);
-  const avgDeal = quoteRows.length ? quoteRows.reduce((s,q)=>s+q.amt,0)/quoteRows.length : 0;
+  const closedWonValue = quoteRows.filter(q=>q.outcome==='won'&&q.stage==='delivered'&&flowInPeriod(q)).reduce((s,q)=>s+q.amt,0);
+  const avgDeal = inP.length ? inP.reduce((s,q)=>s+q.amt,0)/inP.length : 0;
 
+  const pl = {month:'this month',last:'last month','3m':'last 3 months',year:'this year',all:'all time'}[flowPeriod];
   return `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <label style="font-size:13px;color:var(--text-dim,#667)">Delivered / Closed / stats show:</label>
+      <select class="form-input" style="width:auto" onchange="flowSetPeriod(this.value)">
+        <option value="month" ${flowPeriod==='month'?'selected':''}>This month</option><option value="last" ${flowPeriod==='last'?'selected':''}>Last month</option>
+        <option value="3m" ${flowPeriod==='3m'?'selected':''}>Last 3 months</option><option value="year" ${flowPeriod==='year'?'selected':''}>This year</option><option value="all" ${flowPeriod==='all'?'selected':''}>All time</option></select>
+      <span style="font-size:12px;color:#889">Open orders (not yet delivered) always stay on the board.</span>
+    </div>
     <div class="flow-stats">
       <div class="flow-stat"><div class="flow-stat-label">Open Pipeline Value</div><div class="flow-stat-value">RM ${fmt(openValue)}</div></div>
       <div class="flow-stat"><div class="flow-stat-label">Win Rate</div><div class="flow-stat-value">${winRate}%</div></div>
-      <div class="flow-stat"><div class="flow-stat-label">Closed Won (RM)</div><div class="flow-stat-value">RM ${fmt(closedWonValue)}</div></div>
+      <div class="flow-stat"><div class="flow-stat-label">Closed Won (RM) · ${pl}</div><div class="flow-stat-value">RM ${fmt(closedWonValue)}</div></div>
       <div class="flow-stat"><div class="flow-stat-label">Avg Deal Size</div><div class="flow-stat-value">RM ${fmt(Math.round(avgDeal))}</div></div>
     </div>
     <div class="flow-board">
@@ -3686,14 +3984,24 @@ function deleteQuotationRow(i){
   render('quotation');
 }
 function renderItemRows(){
+  const last = currentFormItems.length-1;
   return currentFormItems.map((it,i)=>`
     <tr>
       <td><input type="text" class="form-input" value="${it.desc}" oninput="currentFormItems[${i}].desc=this.value" placeholder="Item description"></td>
       <td><input type="number" class="form-input qty" value="${it.qty}" min="0" step="1" oninput="currentFormItems[${i}].qty=parseFloat(this.value)||0; recalcFormTotal();"></td>
-      <td><input type="number" class="form-input price" value="${it.price}" min="0" step="0.01" oninput="currentFormItems[${i}].price=parseFloat(this.value)||0; recalcFormTotal();"></td>
+      <td><input type="number" class="form-input price" value="${it.price}" min="0" step="0.01" oninput="currentFormItems[${i}].price=parseFloat(this.value)||0; recalcFormTotal();" ${i===last?'onkeydown="itemRowTabNext(event)"':''}></td>
       <td class="line-total" id="line-total-${i}">${fmt2(it.qty*it.price)}</td>
-      <td><button type="button" class="row-remove" onclick="removeItemRow(${i})">✕</button></td>
+      <td><button type="button" class="row-remove" tabindex="-1" onclick="removeItemRow(${i})">✕</button></td>
     </tr>`).join('');
+}
+function itemRowTabNext(event){
+  // Tab out of the last row's price field: start a new item line instead of leaving the table
+  if(event.key!=='Tab' || event.shiftKey) return;
+  event.preventDefault();
+  addItemRow();
+  const rows = document.querySelectorAll('#items-tbody tr');
+  const lastRow = rows[rows.length-1];
+  if(lastRow) lastRow.querySelector('input').focus();
 }
 function addItemRow(){ currentFormItems.push({desc:'', qty:1, price:0}); refreshItemsTable(); }
 function removeItemRow(i){
@@ -4187,6 +4495,7 @@ function generateCashBookPDF(c){
   const title = rc ? 'RECEIPT VOUCHER' : 'PAYMENT VOUCHER';
   let y = pdfLetterhead(doc, left, right, 18, title, c.no, c.date);
   y = pdfKV(doc, left, y, rc ? 'Received Into' : 'Paid From', accountLabel(c.bank));
+  if(c.payTo) y = pdfKV(doc, left, y, rc ? 'Received From' : 'Pay To', c.payTo);
   if(c.ref) y = pdfKV(doc, left, y, 'Cheque / Ref', c.ref);
   doc.setFont('helvetica','normal'); doc.setFontSize(9);
   doc.text('Description', left, y); doc.text(':', left+28, y);
@@ -4260,7 +4569,7 @@ function printCashBookList(){
     y = chk(y, 7); bal += p.debit - p.credit; tr += p.debit; tp += p.credit;
     doc.setFont('helvetica','normal'); doc.setFontSize(8);
     doc.text(fmtDate(p.date), left, y); doc.text(String(p.ref).slice(0,15), left+21, y); doc.text(String(p.chq||'').slice(0,13), left+47, y);
-    doc.text(doc.splitTextToSize(String(p.party||p.desc), 42)[0], left+72, y);
+    doc.text(doc.splitTextToSize(String([p.party,p.desc].filter(Boolean).join(' - ')), 42)[0], left+72, y);
     if(p.debit) doc.text(fmt2(p.debit), 148, y, {align:'right'}); if(p.credit) doc.text(fmt2(p.credit), 168, y, {align:'right'});
     doc.text(money(bal), right, y, {align:'right'}); y += 4.6;
   });
@@ -4318,7 +4627,10 @@ function generatePOPDF(po){
   const attn = po.attn || (supObj ? supObj.attn : null);
   let y = pdfLetterhead(doc, left, right, 18, 'PURCHASE ORDER', po.num, po.date);
   y = pdfPartyBlock(doc, left, y, 'To', po.supplier, addr, attn, null, null, supObj?supObj.phone:null);
-  if(po.refSO){ doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.text(`Reference Sales Order: ${po.refSO}`, left, y); y += 8; }
+  doc.setFont('helvetica','normal'); doc.setFontSize(9);
+  if(po.refSO){ doc.text(`Reference Sales Order: ${po.refSO}`, left, y); y += 5; }
+  if(po.expectedDelivery){ doc.text(`Expected Delivery: ${fmtDate(po.expectedDelivery)}`, left, y); y += 5; }
+  y += 3;
 
   doc.setFont('helvetica','bold'); doc.setFontSize(9);
   doc.text('No', left, y); doc.text('Description', left+10, y);
@@ -4948,7 +5260,7 @@ function downloadSOPDF(idx){
 }
 function downloadPOPDF(idx){
   const r = poRows[idx];
-  generatePOPDF({num:r.num, supplier:r.supplier, date:r.date, addr:r.addr||[], attn:r.attn||'', remarks:r.remarks, items:r.itemsFull||[{desc:'Items per PO', qty:1, price:r.amt}], refSO:r.refSO});
+  generatePOPDF({num:r.num, supplier:r.supplier, date:r.date, addr:r.addr||[], attn:r.attn||'', remarks:r.remarks, expectedDelivery:r.expectedDelivery, items:r.itemsFull||[{desc:'Items per PO', qty:1, price:r.amt}], refSO:r.refSO});
 }
 function downloadGRPDF(idx){
   const r = grRows[idx];
@@ -4965,66 +5277,110 @@ function downloadInvoicePDF(idx){
 const views = {
   dashboard(){
     const m = computeMonthMetrics();
+    const cash = cashPositionNow();
+    const ytd = ytdSalesCompare();
+    const todayISODash = todayISO();
+    const monthStart = todayISODash.slice(0,8)+'01';
+    const pl = buildPL(monthStart, todayISODash);
+    const rec = receivableDetail();
+    const pay = payableDetail();
+    const fc = cashFlowForecast(6);
+    const fcMax = Math.max(1, ...fc.weeks.map(w=>Math.max(w.cashIn,w.cashOut)));
+    const barPx = v => Math.round(Math.max(2, v/fcMax*90));
+    const arrowUp = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-1px"><path d="M12 4 20 16H4z"/></svg>`;
+    const arrowDown = `<svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-1px"><path d="M12 20 4 8h16z"/></svg>`;
+    const dso = dsoDays();
+    const trend = salesTrend6();
+    const trendMax = Math.max(1, ...trend.map(t=>t.amt));
+    const sparkline = `
+          <div class="spark-row">${trend.map((t,i)=>`<div class="spark-bar${i===trend.length-1?' cur':''}" style="height:${Math.max(2,Math.round(t.amt/trendMax*34))}px" title="${t.label}: RM ${fmt(t.amt)}"></div>`).join('')}</div>
+          <div class="spark-labels"><span>${trend[0].label}</span><span>${trend[trend.length-1].label}</span></div>`;
+    const kpiCard = (label, value, sub, rows, flag, extraHTML) => `
+        <div class="kpi-panel ${flag?'flag':''}">
+          <div class="kpi-panel-label">${label}</div>
+          <div class="kpi-panel-value ${flag?'flag':''}">${value}</div>
+          <div class="kpi-panel-sub">${sub}</div>
+          ${extraHTML||''}
+          ${rows.length?`<div class="kpi-panel-rows">${rows.map(r=>`<div class="kpi-panel-row"><span>${r[0]}</span><span class="${r[2]||''}">${r[1]}</span></div>`).join('')}</div>`:''}
+        </div>`;
+    const topDebt = topDebtors(5);
+    const overdueDeliv = overdueSupplierDeliveries();
+    const recons = bankReconStatus();
     return `
-      <div class="kpi-row">
-        <div class="kpi-card">
-          <div class="kpi-card-label">Quotations pending decision</div>
-          <div class="kpi-card-value">${m.pendingQuotes.length}</div>
-          <div class="kpi-card-note">Awaiting Win / Lost / Declined</div>
+      <div class="kpi-panel-grid">
+        ${kpiCard('Cash Position', `RM ${fmt(cash.total)}`, 'total cash &amp; bank, today', [
+          ['Cash in hand', fmt(cash.cashInHand)],
+          ...(cash.bankRows.length ? [[`Bank balance (${cash.bankRows.length} account${cash.bankRows.length===1?'':'s'})`, fmt(cash.bankTotal)]] : []),
+        ])}
+        ${kpiCard('Sales', `RM ${fmt(m.salesThisMonth)}`, 'this month', [
+          [`YTD sales (${fyLabel(todayISODash)})`, fmt(ytd.ytdSales)],
+          ['vs last year YTD', ytd.pct==null ? 'no data last year' : `<span class="${ytd.pct>=0?'txt-green':'txt-red'}">${ytd.pct>=0?arrowUp:arrowDown} ${Math.abs(ytd.pct).toFixed(1)}%</span>`],
+        ], false, sparkline)}
+        ${kpiCard('Profit', `RM ${fmt(pl.net)}`, `net profit, this month &middot; ${m.salesThisMonth>0?(pl.net/m.salesThisMonth*100).toFixed(1):'0.0'}% margin`, [
+          ['Gross profit', fmt(pl.grossProfit)],
+          ['Gross margin', m.salesThisMonth>0 ? (pl.grossProfit/m.salesThisMonth*100).toFixed(1)+'%' : '-'],
+        ])}
+        ${kpiCard('Receivable', `RM ${fmt(m.totalAR)}`, dso!=null ? `DSO: ${dso} days to collect` : 'total owed by customers', [
+          ['Overdue', fmt(m.overdueCustomer), m.overdueCustomer>0?'txt-red':''],
+          ['Customers overdue', rec.overdueCustomerCount],
+          ['Over 90 days', rec.over90Count ? rec.over90Count+' customer'+(rec.over90Count===1?'':'s') : 'none', rec.over90Count>0?'txt-red':''],
+        ], m.overdueCustomer>0)}
+        ${kpiCard('Payable', `RM ${fmt(m.totalAP)}`, 'total owed to suppliers', [
+          ['Due in next 30 days', fmt(pay.dueNext30)],
+          ['Overdue to supplier', fmt(m.overdueSupplier), m.overdueSupplier>0?'txt-red':''],
+        ], m.overdueSupplier>0)}
+      </div>
+
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head"><p class="panel-title">Top 5 customers — outstanding</p></div>
+          <table>
+            <thead><tr><th>Customer</th><th>Outstanding (RM)</th></tr></thead>
+            <tbody>${topDebt.length ? topDebt.map(r=>`<tr><td class="cell-strong">${r.name}</td><td>${fmt2(r.total)}</td></tr>`).join('') : '<tr><td colspan="2" class="cell-dim">Nothing outstanding.</td></tr>'}</tbody>
+          </table>
         </div>
-        <div class="kpi-card">
-          <div class="kpi-card-label">Quotations (this month)</div>
-          <div class="kpi-card-value">RM ${fmt(m.quotesValue)}</div>
-          <div class="kpi-card-note">${m.quotesThisMonth.length} document(s)</div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-card-label">Invoiced (this month)</div>
-          <div class="kpi-card-value">RM ${fmt(m.salesThisMonth)}</div>
-          <div class="kpi-card-note">${m.invoicesThisMonth.length} invoice(s)</div>
-        </div>
-        <div class="kpi-card ${m.overdueCustomer>0?'flag':''}">
-          <div class="kpi-card-label">Overdue — customers</div>
-          <div class="kpi-card-value ${m.overdueCustomer>0?'flag':''}">RM ${fmt(m.overdueCustomer)}</div>
-          <div class="kpi-card-note">${m.overdueCustomer>0?'Requires follow-up':'None overdue'}</div>
+        <div class="panel">
+          <div class="panel-head"><p class="panel-title">Bank reconciliation status</p></div>
+          <div class="form-body">
+            ${recons.length ? recons.map(r=>`
+              <div class="recon-row">
+                <span>${r.name}</span>
+                <span class="recon-pill ${r.overdue?'overdue':'ok'}">${r.lastDate ? `Last: ${fmtDate(r.lastDate)} (${r.daysSince}d ago)` : 'Never reconciled'}</span>
+              </div>`).join('') : '<p class="section-note">No bank accounts set up.</p>'}
+          </div>
         </div>
       </div>
 
-      <div class="kpi-row">
-        <div class="kpi-card">
-          <div class="kpi-card-label">Sales (this month)</div>
-          <div class="kpi-card-value">RM ${fmt(m.salesThisMonth)}</div>
-          <div class="kpi-card-note">Invoices dated this month</div>
+      ${overdueDeliv.length ? `
+      <div class="panel">
+        <div class="panel-head"><p class="panel-title">Supplier deliveries — overdue</p></div>
+        <table>
+          <thead><tr><th>PO Number</th><th>Supplier</th><th>Expected</th><th>Days Late</th><th>Amount (RM)</th></tr></thead>
+          <tbody>${overdueDeliv.map(po=>`<tr><td class="cell-dim">${po.num}</td><td class="cell-strong">${po.supplier}</td><td class="txt-red">${fmtDate(po.expectedDelivery)}</td><td class="txt-red">${po.daysLate}</td><td>${fmt(po.amt)}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>` : ''}
+
+      <div class="panel">
+        <div class="panel-head">
+          <p class="panel-title">Cash Flow Forecast — next 6 weeks</p>
+          <div class="fc-legend"><span><i class="fc-dot fc-in"></i>Cash in</span><span><i class="fc-dot fc-out"></i>Cash out</span></div>
         </div>
-        <div class="kpi-card">
-          <div class="kpi-card-label">Cost of goods (this month)</div>
-          <div class="kpi-card-value">RM ${fmt(m.cogsThisMonth)}</div>
-          <div class="kpi-card-note">Purchase Invoices dated this month</div>
+        <div class="fc-weeks">
+          ${fc.weeks.map(w=>`
+            <div class="fc-week">
+              <div class="fc-bars" style="height:94px">
+                <div class="fc-bar fc-in" style="height:${barPx(w.cashIn)}px" title="Cash in: RM ${fmt2(w.cashIn)}"></div>
+                <div class="fc-bar fc-out" style="height:${barPx(w.cashOut)}px" title="Cash out: RM ${fmt2(w.cashOut)}"></div>
+              </div>
+              <div class="fc-label">${w.label}</div>
+              <div class="fc-closing">${fmt(w.closing)}</div>
+            </div>`).join('')}
         </div>
-        <div class="kpi-card">
-          <div class="kpi-card-label">Gross profit</div>
-          <div class="kpi-card-value">RM ${fmt(m.grossProfit)}</div>
-          <div class="kpi-card-note">Margin ${m.margin.toFixed(1)}% · before operating expenses</div>
-        </div>
-        <div class="kpi-card ${m.overdueSupplier>0?'flag':''}">
-          <div class="kpi-card-label">Overdue — suppliers</div>
-          <div class="kpi-card-value ${m.overdueSupplier>0?'flag':''}">RM ${fmt(m.overdueSupplier)}</div>
-          <div class="kpi-card-note">${m.overdueSupplier>0?'Payment due':'None overdue'}</div>
-        </div>
+        <p class="section-note" style="margin-top:14px">Built from invoices and purchase invoices already in the system, bucketed by due date (anything already overdue is assumed to land in week 1). It does not predict new orders, and does not know about recurring bills unless they are already keyed into Cash Book.</p>
       </div>
 
       ${tableView('Recent sales orders', ['SO Number','Client','Date','Amount (RM)','Items','Status'],
         soRows.slice(0,3), r=>`
-        <tr>
-          <td class="cell-dim">${r.num}</td>
-          <td class="cell-strong">${r.client}</td>
-          <td class="cell-dim">${fmtDate(r.date)}</td>
-          <td>${fmt(r.amt)}</td>
-          <td class="cell-dim">${r.items}</td>
-          <td>${statusBadge(r.status)}</td>
-        </tr>`)}
-
-      ${tableView('Recent quotations', ['Quote No.','Client','Date','Amount (RM)','Items','Status'],
-        quoteRows.slice(0,3), r=>`
         <tr>
           <td class="cell-dim">${r.num}</td>
           <td class="cell-strong">${r.client}</td>
@@ -5085,14 +5441,14 @@ const views = {
           <thead><tr><th>Invoice No.</th><th>Client</th><th>Date</th><th>Due</th><th>Amount (RM)</th><th>Deposit Applied (RM)</th><th>Outstanding (RM)</th><th>Status</th><th>OR Ref</th><th></th></tr></thead>
           <tbody>
             ${invoiceRows.map((r,i)=>{
-              const ors = orRows.filter(o=>orAllocs(o).some(a=>a.inv===r.num)).map(o=>o.num);
+              const ors = invoiceORs(r);
               return `
               <tr>
                 <td class="cell-dim">${r.num}</td><td class="cell-strong">${r.client}</td><td class="cell-dim">${fmtDate(r.date)}</td><td class="cell-dim">${fmtDate(isoOf(dueDateOf(r,'inv')))}</td><td>${fmt(r.amt)}</td>
                 <td class="cell-dim">${r.depositApplied?fmt(r.depositApplied):'-'}</td>
                 <td>${fmt(outstandingOf(r,'inv'))}</td>
                 <td>${statusBadge(displayStatus(r,'inv'))}</td>
-                <td class="cell-dim">${ors.length?ors.join(', '):'-'}</td>
+                <td class="cell-dim">${ors.length?ors.join('<br>'):'-'}</td>
                 <td class="row-actions">
                   <button class="pdf-btn" onclick="downloadInvoicePDF(${i})">PDF</button>
                   <button class="pdf-btn" onclick="openInvoiceEditForm(${i})">Edit</button>
@@ -5184,17 +5540,21 @@ const views = {
           <button class="pdf-btn danger-btn" onclick="clearAllPO()">Delete All</button>
         </div>
         <table>
-          <thead><tr><th>PO Number</th><th>Supplier</th><th>Date</th><th>Amount (RM)</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>PO Number</th><th>Supplier</th><th>Date</th><th>Amount (RM)</th><th>Expected Delivery</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            ${poRows.map((r,i)=>`
+            ${poRows.map((r,i)=>{
+              const received = grRows.some(g=>g.refPO===r.num);
+              const late = r.expectedDelivery && !received && localDate(r.expectedDelivery) < new Date(new Date().setHours(0,0,0,0));
+              return `
               <tr>
-                <td class="cell-dim">${r.num}</td><td class="cell-strong">${r.supplier}</td><td class="cell-dim">${fmtDate(r.date)}</td><td>${fmt(r.amt)}</td><td>${statusBadge(r.status)}</td>
+                <td class="cell-dim">${r.num}</td><td class="cell-strong">${r.supplier}</td><td class="cell-dim">${fmtDate(r.date)}</td><td>${fmt(r.amt)}</td>
+                <td class="${late?'txt-red':'cell-dim'}">${r.expectedDelivery?fmtDate(r.expectedDelivery):'-'}${late?' · overdue':''}</td><td>${statusBadge(r.status)}</td>
                 <td class="row-actions">
                   <button class="pdf-btn" onclick="downloadPOPDF(${i})">PDF</button>
                   <button class="pdf-btn" onclick="openPOEditForm(${i})">Edit</button>
                   <button class="pdf-btn danger-btn" onclick="deletePORow(${i})">Delete</button>
                 </td>
-              </tr>`).join('')}
+              </tr>`;}).join('')}
           </tbody>
         </table>
       </div>`;
@@ -5231,11 +5591,12 @@ const views = {
           <button class="pdf-btn danger-btn" onclick="clearAllPI()">Delete All</button>
         </div>
         <table>
-          <thead><tr><th>PI Number</th><th>Supplier</th><th>Date</th><th>Due</th><th>Amount (RM)</th><th>Outstanding (RM)</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>PI Number</th><th>Supplier</th><th>Date</th><th>Due</th><th>Amount (RM)</th><th>Outstanding (RM)</th><th>Status</th><th>PV Ref</th><th></th></tr></thead>
           <tbody>
             ${piRows.map((r,i)=>`
               <tr>
                 <td class="cell-dim">${r.num}</td><td class="cell-strong">${r.supplier}</td><td class="cell-dim">${fmtDate(r.date)}</td><td class="cell-dim">${fmtDate(isoOf(dueDateOf(r,'pi')))}</td><td>${fmt(r.amt)}</td><td>${fmt(outstandingOf(r,'pi'))}</td><td>${statusBadge(displayStatus(r,'pi'))}</td>
+                <td class="cell-dim">${piPVs(r).join('<br>')||'-'}</td>
                 <td class="row-actions">
                   <button class="pdf-btn" onclick="downloadPIPDF(${i})">PDF</button>
                   <button class="pdf-btn" onclick="openPIEditForm(${i})">Edit</button>
