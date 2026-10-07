@@ -3987,13 +3987,14 @@ function renderItemRows(){
   const last = currentFormItems.length-1;
   return currentFormItems.map((it,i)=>`
     <tr>
-      <td><input type="text" class="form-input" value="${it.desc}" oninput="currentFormItems[${i}].desc=this.value" placeholder="Item description"></td>
+      <td><textarea class="form-input item-desc" rows="${Math.max(1,String(it.desc||'').split('\n').length)}" style="resize:vertical;min-height:38px;line-height:1.4;font-family:inherit" oninput="currentFormItems[${i}].desc=this.value; itemDescGrow(this)" placeholder="Item description (press Enter for a new line)">${escapeHtml(it.desc||'')}</textarea></td>
       <td><input type="number" class="form-input qty" value="${it.qty}" min="0" step="1" oninput="currentFormItems[${i}].qty=parseFloat(this.value)||0; recalcFormTotal();"></td>
       <td><input type="number" class="form-input price" value="${it.price}" min="0" step="0.01" oninput="currentFormItems[${i}].price=parseFloat(this.value)||0; recalcFormTotal();" ${i===last?'onkeydown="itemRowTabNext(event)"':''}></td>
       <td class="line-total" id="line-total-${i}">${fmt2(it.qty*it.price)}</td>
       <td><button type="button" class="row-remove" tabindex="-1" onclick="removeItemRow(${i})">✕</button></td>
     </tr>`).join('');
 }
+function itemDescGrow(el){ el.style.height='auto'; el.style.height=Math.max(38,el.scrollHeight+2)+'px'; }
 function itemRowTabNext(event){
   // Tab out of the last row's price field: start a new item line instead of leaving the table
   if(event.key!=='Tab' || event.shiftKey) return;
@@ -4001,7 +4002,7 @@ function itemRowTabNext(event){
   addItemRow();
   const rows = document.querySelectorAll('#items-tbody tr');
   const lastRow = rows[rows.length-1];
-  if(lastRow) lastRow.querySelector('input').focus();
+  if(lastRow) lastRow.querySelector('textarea,input').focus();
 }
 function addItemRow(){ currentFormItems.push({desc:'', qty:1, price:0}); refreshItemsTable(); }
 function removeItemRow(i){
