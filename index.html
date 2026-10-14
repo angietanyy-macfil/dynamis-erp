@@ -2686,11 +2686,165 @@ function buildGLReport(fromISO, toISO){
   });
   return out;
 }
-function rptTitle(){ return {tb:'Trial Balance', pl:'Profit & Loss Statement', bs:'Balance Sheet', gl:'General Ledger'}[rpt.type]; }
+function rptTitle(){ return {tb:'Trial Balance', pl:'Profit & Loss Statement', bs:'Balance Sheet', gl:'General Ledger', monthly:'Monthly Sales & Profit', debtor:'Debtor Aging', creditor:'Creditor Aging'}[rpt.type]; }
 function rptSubtitle(){
+  if(rpt.type==='monthly') return `${fyLabel(rpt.to)} (1 Apr – 31 Mar)`;
+  if(rpt.type==='debtor' || rpt.type==='creditor') return `As at ${fmtDate(rpt.to)}`;
   return (rpt.type==='tb' || rpt.type==='bs') ? `As at ${fmtDate(rpt.to)} · ${fyLabel(rpt.to)}` : `${fmtDate(rpt.from)} to ${fmtDate(rpt.to)}`;
 }
+// ---------- Debtor / Creditor Aging ----------
+let agingDetail = false;
+const AGING_BUCKETS = ['Current','1–30 days','31–60 days','61–90 days','Over 90 days'];
+function agingBucket(daysLate){ return daysLate<=0 ? 0 : daysLate<=30 ? 1 : daysLate<=60 ? 2 : daysLate<=90 ? 3 : 4; }
+function buildAging(kind, asAtISO){
+  const asAt = localDate(asAtISO);
+  const nextDay = isoOf(new Date(asAt.getFullYear(), asAt.getMonth(), asAt.getDate()+1));
+  const isInv = kind==='debtor';
+  const docs = isInv ? invoiceRows : piRows, k = isInv ? 'inv' : 'pi';
+  const map = {};
+  docs.forEach(d=>{
+    if(localDate(d.date) > asAt) return;
+    const out = Math.round((isInv ? invOutstandingBefore(d, nextDay) : piOutstandingBefore(d, nextDay))*100)/100;
+    if(out <= 0.005) return;
+    const party = isInv ? d.client : d.supplier;
+    const due = dueDateOf(d,k);
+    const late = Math.round((asAt - due)/86400000);
+    const b = agingBucket(late);
+    const g = map[party] = map[party] || {party, docs:[], buckets:[0,0,0,0,0], total:0};
+    g.docs.push({num:d.num, date:d.date, due:isoOf(due), out, late, b});
+    g.buckets[b] += out; g.total += out;
+  });
+  const groups = Object.values(map).sort((a,b)=>b.total-a.total);
+  groups.forEach(g=>g.docs.sort((a,b)=> a.date<b.date?-1:1));
+  const tot = {buckets:[0,0,0,0,0], total:0};
+  groups.forEach(g=>{ g.buckets.forEach((v,i)=>tot.buckets[i]+=v); tot.total += g.total; });
+  return {groups, tot};
+}
+function agingHTML(){
+  const a = buildAging(rpt.type, rpt.to), isInv = rpt.type==='debtor';
+  const num = v => Math.abs(v)<0.005 ? '<span class="cell-dim">-</span>' : fmt2(v);
+  const head = `<tr><th>${isInv?'Customer':'Supplier'}</th>${agingDetail?'<th>Doc date</th><th>Due date</th>':''}${AGING_BUCKETS.map(b=>`<th style="text-align:right">${b}</th>`).join('')}<th style="text-align:right">Total (RM)</th></tr>`;
+  const body = a.groups.map(g=>{
+    const main = `<tr><td class="cell-strong">${escapeHtml(g.party)}</td>${agingDetail?'<td></td><td></td>':''}${g.buckets.map(v=>`<td style="text-align:right" class="cell-strong">${num(v)}</td>`).join('')}<td style="text-align:right" class="cell-strong">${fmt2(g.total)}</td></tr>`;
+    const det = agingDetail ? g.docs.map(d=>`<tr><td class="cell-dim" style="padding-left:28px">${escapeHtml(d.num)}</td><td class="cell-dim">${fmtDate(d.date)}</td><td class="cell-dim">${fmtDate(d.due)}</td>${AGING_BUCKETS.map((_,i)=>`<td style="text-align:right" class="cell-dim">${i===d.b?fmt2(d.out):''}</td>`).join('')}<td style="text-align:right" class="cell-dim">${fmt2(d.out)}</td></tr>`).join('') : '';
+    return main+det;
+  }).join('') || `<tr><td colspan="9" class="cell-dim">Nothing outstanding as at this date.</td></tr>`;
+  const foot = a.groups.length ? `<tr><td class="cell-strong">TOTAL</td>${agingDetail?'<td></td><td></td>':''}${a.tot.buckets.map(v=>`<td style="text-align:right" class="cell-strong">${num(v)}</td>`).join('')}<td style="text-align:right" class="cell-strong">${fmt2(a.tot.total)}</td></tr>` : '';
+  return `<div class="form-body" style="padding-bottom:0"><label class="check-line"><input type="checkbox" ${agingDetail?'checked':''} onchange="agingDetail=this.checked; render('reports')"> Show each invoice (detail)</label></div>
+    <div style="overflow-x:auto"><table class="alloc-table" style="min-width:820px"><thead>${head}</thead><tbody>${body}${foot}</tbody></table></div>
+    <p class="section-note" style="padding:10px 18px">Aged by <b>due date</b> (invoice date + payment terms), as at the date chosen. “Current” means not yet due; the other columns show how many days past the due date. Payments, deposits and credit/debit notes dated after the chosen date are not counted.</p>`;
+}
+function agingRowsForExport(){
+  const a = buildAging(rpt.type, rpt.to), isInv = rpt.type==='debtor';
+  const rows = [[isInv?'Customer':'Supplier','Doc No.','Doc date','Due date'].concat(AGING_BUCKETS, ['Total (RM)'])];
+  a.groups.forEach(g=>{
+    rows.push([g.party,'','',''].concat(g.buckets.map(v=>Math.round(v*100)/100), [Math.round(g.total*100)/100]));
+    g.docs.forEach(d=> rows.push(['  '+(isInv?'Invoice':'Purchase Invoice'),d.num,fmtDate(d.date),fmtDate(d.due)].concat(AGING_BUCKETS.map((_,i)=> i===d.b ? Math.round(d.out*100)/100 : ''), [Math.round(d.out*100)/100])));
+  });
+  rows.push(['TOTAL','','',''].concat(a.tot.buckets.map(v=>Math.round(v*100)/100), [Math.round(a.tot.total*100)/100]));
+  return rows;
+}
+function downloadAgingExcel(){
+  if(typeof XLSX==='undefined'){ alert('Excel library did not load — check your connection and try again.'); return; }
+  const rows = agingRowsForExport();
+  const ws = XLSX.utils.aoa_to_sheet([[rptTitle()+' — '+rptSubtitle()], []].concat(rows));
+  ws['!cols'] = [{wch:34},{wch:16},{wch:12},{wch:12},{wch:14},{wch:14},{wch:14},{wch:14},{wch:14},{wch:15}];
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, rpt.type==='debtor'?'Debtor Aging':'Creditor Aging');
+  XLSX.writeFile(wb, `${rptTitle().replace(/ /g,'_')}_${rpt.to}.xlsx`);
+}
+function downloadAgingPDF(){
+  if(!window.jspdf){ alert('PDF library did not load — check your connection and try again.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+  const a = buildAging(rpt.type, rpt.to), isInv = rpt.type==='debtor';
+  const left = 10, right = 287;
+  const X = {name:left, d1:132, d2:150}; const cx = [175,198,221,244,267]; const tx = right;
+  let y = 0;
+  const header = ()=>{
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(0); doc.text('DYNAMIS SOLUTIONS SDN BHD', left, 14);
+    doc.setFontSize(11); doc.text(rptTitle().toUpperCase()+' — '+rptSubtitle(), left, 21);
+    y = 30; doc.setFontSize(8);
+    doc.text(isInv?'Customer':'Supplier', left, y);
+    if(agingDetail){ doc.text('Doc date', X.d1, y); doc.text('Due date', X.d2, y); }
+    AGING_BUCKETS.forEach((b,i)=> doc.text(b, cx[i], y, {align:'right'})); doc.text('Total (RM)', tx, y, {align:'right'});
+    y += 2; doc.line(left, y, right, y); y += 5.5;
+  };
+  const chk = n=>{ if(y+n > 195){ doc.addPage(); header(); } };
+  const n2 = v => Math.abs(v)<0.005 ? '-' : fmt2(v);
+  header();
+  a.groups.forEach(g=>{
+    chk(7); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+    doc.text(String(g.party).slice(0,60), left, y);
+    g.buckets.forEach((v,i)=> doc.text(n2(v), cx[i], y, {align:'right'})); doc.text(fmt2(g.total), tx, y, {align:'right'}); y += 5;
+    if(agingDetail) g.docs.forEach(d=>{
+      chk(6); doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(90);
+      doc.text(d.num, left+5, y); doc.text(fmtDate(d.date), X.d1, y); doc.text(fmtDate(d.due), X.d2, y);
+      doc.text(fmt2(d.out), cx[d.b], y, {align:'right'}); doc.text(fmt2(d.out), tx, y, {align:'right'}); doc.setTextColor(0); y += 4.4;
+    });
+  });
+  chk(10); doc.line(left, y-2, right, y-2); y += 3;
+  doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.text('TOTAL', left, y);
+  a.tot.buckets.forEach((v,i)=> doc.text(n2(v), cx[i], y, {align:'right'})); doc.text(fmt2(a.tot.total), tx, y, {align:'right'});
+  doc.save(`${rptTitle().replace(/ /g,'_')}_${rpt.to}.pdf`);
+}
+function buildMonthly(anyISO){
+  const start = localDate(fyStartOf(anyISO));
+  const months = [];
+  for(let i=0;i<12;i++){
+    const d = new Date(start.getFullYear(), start.getMonth()+i, 1);
+    const from = isoOf(d), to = isoOf(new Date(d.getFullYear(), d.getMonth()+1, 0));
+    const x = buildPL(from, to);
+    months.push({label:d.toLocaleString('en-US',{month:'short'})+' '+String(d.getFullYear()).slice(-2), sales:x.totalRevenue, cogs:x.totalCogs, gp:x.grossProfit,
+      gpPct: x.totalRevenue>0 ? x.grossProfit/x.totalRevenue*100 : null, other:x.totalOther, exp:x.totalExp, pbt:x.pbt});
+  }
+  const tot = months.reduce((t,m)=>({sales:t.sales+m.sales,cogs:t.cogs+m.cogs,gp:t.gp+m.gp,other:t.other+m.other,exp:t.exp+m.exp,pbt:t.pbt+m.pbt}),{sales:0,cogs:0,gp:0,other:0,exp:0,pbt:0});
+  tot.gpPct = tot.sales>0 ? tot.gp/tot.sales*100 : null; tot.label='Total';
+  return {months, tot};
+}
+const MONTHLY_ROWS = [['Sales','sales'],['Cost of sales','cogs'],['Gross profit','gp',true],['Gross profit %','gpPct',false,true],['Other income','other'],['Expenses','exp'],['Profit / (loss) before tax','pbt',true]];
+function monthlyCell(v,pct){ if(v==null) return '-'; if(pct) return v.toFixed(1)+'%'; return Math.abs(v)<0.005 ? '-' : money(v); }
+function monthlyHTML(){
+  const m = buildMonthly(rpt.to);
+  const cols = m.months.concat([m.tot]);
+  return `<div style="overflow-x:auto"><table class="alloc-table" style="min-width:1100px">
+    <thead><tr><th>RM</th>${cols.map(c=>`<th style="text-align:right">${c.label}</th>`).join('')}</tr></thead>
+    <tbody>${MONTHLY_ROWS.map(([lab,key,bold,pct])=>`<tr><td class="${bold?'cell-strong':''}">${lab}</td>${cols.map(c=>`<td style="text-align:right;white-space:nowrap" class="${bold||c.label==='Total'?'cell-strong':''}">${monthlyCell(c[key],pct)}</td>`).join('')}</tr>`).join('')}</tbody>
+  </table></div>
+  <p class="section-note" style="padding:10px 18px">Sales = invoices (less credit notes) posted in the General Ledger. Cost of sales = purchases booked in that month, so a month's gross profit can look higher or lower when stock is bought in a different month from when it is sold.</p>`;
+}
+function downloadMonthlyExcel(){
+  if(typeof XLSX==='undefined'){ alert('Excel library did not load — check your connection and try again.'); return; }
+  const m = buildMonthly(rpt.to), cols = m.months.concat([m.tot]);
+  const rows = [['Monthly Sales & Profit — '+fyLabel(rpt.to)], [], ['RM'].concat(cols.map(c=>c.label))];
+  MONTHLY_ROWS.forEach(([lab,key,b,pct])=> rows.push([lab].concat(cols.map(c=> c[key]==null ? '' : (pct ? Math.round(c[key]*10)/10 : Math.round(c[key]*100)/100)))));
+  const ws = XLSX.utils.aoa_to_sheet(rows); ws['!cols'] = [{wch:30}].concat(cols.map(()=>({wch:13})));
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Monthly');
+  XLSX.writeFile(wb, `Monthly_Sales_Profit_${fyLabel(rpt.to).replace(/[^0-9]+/g,'_')}.xlsx`);
+}
+function downloadMonthlyPDF(){
+  if(!window.jspdf){ alert('PDF library did not load — check your connection and try again.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({unit:'mm', format:'a4', orientation:'landscape'});
+  const m = buildMonthly(rpt.to), cols = m.months.concat([m.tot]);
+  const left = 10, right = 287, lw = 42, cw = (right-left-lw)/cols.length;
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.text('DYNAMIS SOLUTIONS SDN BHD', left, 14);
+  doc.setFontSize(11); doc.text('MONTHLY SALES & PROFIT — '+fyLabel(rpt.to)+' (1 Apr – 31 Mar)', left, 21);
+  let y = 30; doc.setFontSize(8);
+  doc.text('RM', left, y); cols.forEach((c,i)=> doc.text(c.label, left+lw+cw*(i+1)-1, y, {align:'right'}));
+  y += 2; doc.line(left, y, right, y); y += 6;
+  MONTHLY_ROWS.forEach(([lab,key,bold,pct])=>{
+    doc.setFont('helvetica', bold?'bold':'normal'); doc.text(lab, left, y);
+    cols.forEach((c,i)=>{ doc.setFont('helvetica', (bold||c.label==='Total')?'bold':'normal'); doc.text(monthlyCell(c[key],pct), left+lw+cw*(i+1)-1, y, {align:'right'}); });
+    y += 7;
+  });
+  doc.line(left, y-3, right, y-3);
+  doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(110);
+  doc.text('Cost of sales = purchases booked in the month; gross profit may differ month to month when stock is bought and sold in different months.', left, y+3);
+  doc.save(`Monthly_Sales_Profit_${fyLabel(rpt.to).replace(/[^0-9]+/g,'_')}.pdf`);
+}
 function rptBodyHTML(){
+  if(rpt.type==='monthly') return monthlyHTML();
+  if(rpt.type==='debtor' || rpt.type==='creditor') return agingHTML();
   const r = (label, amt, o)=> { o=o||{}; return `<tr><td style="padding-left:${o.indent?28:18}px" class="${o.bold?'cell-strong':''}">${label}</td><td style="text-align:right" class="${o.bold?'cell-strong':''}">${amt===''?'':money(amt)}</td></tr>`; };
   const head = t => `<tr><td colspan="2" class="cell-strong" style="background:var(--bg)">${t}</td></tr>`;
   const lines = arr => arr.map(x=>r(`${x.code} — ${escapeHtml(x.name)}`, x.amt, {indent:true}) + (x.children||[]).map(c=>`<tr><td style="padding-left:52px" class="cell-dim">${c.code} — ${escapeHtml(c.name)}</td><td style="text-align:right" class="cell-dim">${money(c.amt)}</td></tr>`).join('')).join('');
@@ -2737,20 +2891,21 @@ function rptBodyHTML(){
       <tr><td></td><td></td><td class="cell-strong">Closing balance</td><td></td><td></td><td style="text-align:right" class="cell-strong">${money(g.closing)}</td></tr></tbody></table>`).join('');
 }
 function renderReports(){
-  const asAt = rpt.type==='tb' || rpt.type==='bs';
+  const asAt = rpt.type==='tb' || rpt.type==='bs' || rpt.type==='monthly' || rpt.type==='debtor' || rpt.type==='creditor';
   const tab = (t,l)=>`<button class="${rpt.type===t?'new-btn':'pdf-btn'}" onclick="rptType('${t}')">${l}</button>`;
   return `
     <div class="panel">
       <div class="panel-head">
         <p class="panel-title">${rptTitle()} — ${rptSubtitle()}</p>
-        <button class="new-btn" onclick="downloadReportPDF()">Print / Download PDF</button>
+        <button class="new-btn" onclick="${rpt.type==='monthly'?'downloadMonthlyPDF()':(rpt.type==='debtor'||rpt.type==='creditor')?'downloadAgingPDF()':'downloadReportPDF()'}">Print / Download PDF</button>
+        ${rpt.type==='monthly' ? `<button class="pdf-btn" onclick="downloadMonthlyExcel()">Download Excel</button>` : ''}${(rpt.type==='debtor'||rpt.type==='creditor') ? `<button class="pdf-btn" onclick="downloadAgingExcel()">Download Excel</button>` : ''}
         ${rpt.type==='pl' ? `<button class="pdf-btn" onclick="downloadPLExcel('${rpt.from}','${rpt.to}','${rptSubtitle().replace(/'/g,"\\'")}')">Download Excel</button>` : ''}
       </div>
       <div class="form-body" style="padding-bottom:8px">
-        <div class="head-actions" style="margin-bottom:12px;flex-wrap:wrap">${tab('gl','General Ledger')}${tab('tb','Trial Balance')}${tab('pl','Profit & Loss')}${tab('bs','Balance Sheet')}</div>
+        <div class="head-actions" style="margin-bottom:12px;flex-wrap:wrap">${tab('gl','General Ledger')}${tab('tb','Trial Balance')}${tab('pl','Profit & Loss')}${tab('bs','Balance Sheet')}${tab('monthly','Monthly Sales & Profit')}${tab('debtor','Debtor Aging')}${tab('creditor','Creditor Aging')}</div>
         <div class="form-grid three">
           ${asAt ? '' : `<div class="form-field"><label>From</label><input type="date" class="form-input" value="${rpt.from}" onchange="rptSet('from',this.value)"></div>`}
-          <div class="form-field"><label>${asAt?'As at':'To'}</label><input type="date" class="form-input" value="${rpt.to}" onchange="rptSet('to',this.value)"></div>
+          <div class="form-field"><label>${rpt.type==='monthly'?'Pick any date in the financial year':(asAt?'As at':'To')}</label><input type="date" class="form-input" value="${rpt.to}" onchange="rptSet('to',this.value)"></div>
           <div class="form-field"><label>Financial year</label><div class="form-static">${fyLabel(rpt.to)} (1 Apr – 31 Mar)</div></div>
         </div>
       </div>
