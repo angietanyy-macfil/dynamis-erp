@@ -836,11 +836,14 @@ function termDaysOf(rec, fallbackText){
   return mm ? parseInt(mm[1],10) : 0;
 }
 function docTermDays(doc, kind){
+  if(kind==='pi' && doc.termDays!=null && doc.termDays!=='') return Number(doc.termDays)||0;
   return kind==='pi' ? termDaysOf(lookupSupplierByName(doc.supplier)) : termDaysOf(lookupCustomerByName(doc.client), doc.terms);
 }
 function dueDateOf(doc, kind){ const d = localDate(doc.date); d.setDate(d.getDate()+docTermDays(doc,kind)); return d; }
 function isoOf(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function invAdjust(iv){ return salesNotes.filter(n=>n.refInvoice===iv.num).reduce((s,n)=>s+(n.type==='DN'?n.amt:-n.amt),0); }
+function piCostAcct(piNum){ const x = piRows.find(r=>r.num===piNum); return (x && x.expenseAcct) || ACC.cogs; }
+function isOtherBill(pi){ return !!pi.expenseAcct; }
 function piAdjust(pi){ return purchaseNotes.filter(n=>n.refPI===pi.num).reduce((s,n)=>s+(n.type==='DN'?n.amt:-n.amt),0); }
 function outstandingOf(doc, kind){ const base = doc.amt + (kind==='pi' ? piAdjust(doc) : invAdjust(doc)); return Math.max(0, base - (doc.paidAmt||0)); }
 function daysOverdue(doc, kind){
@@ -1025,8 +1028,8 @@ function computeMonthMetrics(ref){
   const quotesValue = quotesThisMonth.reduce((s,q)=>s+q.amt,0);
   const invoicesThisMonth = invoiceRows.filter(iv=>isSameMonth(iv.date, now));
   const salesThisMonth = invoicesThisMonth.reduce((s,iv)=>s+iv.amt,0);
-  const piThisMonth = piRows.filter(pi=>isSameMonth(pi.date, now));
-  const cogsThisMonth = piThisMonth.reduce((s,pi)=>s+pi.amt,0) + purchaseNotes.filter(n=>isSameMonth(n.date, now)).reduce((s,n)=>s+(n.type==='DN'?n.amt:-n.amt),0);
+  const piThisMonth = piRows.filter(pi=>isSameMonth(pi.date, now) && !isOtherBill(pi));
+  const cogsThisMonth = piThisMonth.reduce((s,pi)=>s+pi.amt,0) + purchaseNotes.filter(n=>isSameMonth(n.date, now) && !isOtherBill(piRows.find(r=>r.num===n.refPI)||{})).reduce((s,n)=>s+(n.type==='DN'?n.amt:-n.amt),0);
   const pendingQuotes = quoteRows.filter(q=>q.outcome==='pending');
   const overdueCustomer = invoiceRows.filter(iv=>isOverdue(iv,'inv')).reduce((s,iv)=>s+outstandingOf(iv,'inv'),0);
   const overdueSupplier = piRows.filter(pi=>isOverdue(pi,'pi')).reduce((s,pi)=>s+outstandingOf(pi,'pi'),0);
@@ -1725,6 +1728,66 @@ function savePIFromGR(grIdx){
   render('gr');
 }
 
+// ---------- Other creditor bills (secretary fee, transporter, etc.) — stored as purchase invoices posted to an expense account ----------
+function openOtherBillForm(editIdx){
+  const r = (editIdx!=null) ? piRows[editIdx] : null;
+  currentFormItems = r ? (r.itemsFull && r.itemsFull.length ? r.itemsFull : [{desc:'Bill', qty:1, price:r.amt}]).map(it=>({...it})) : [{desc:'', qty:1, price:0}];
+  const accts = accounts.filter(a=>!a.header && (a.type==='Expense' || a.type==='Cost of Sales') && !a.tax).sort(byCode).map(a=>({id:a.code, label:`${a.code} — ${a.name}`}));
+  const sup = r ? lookupSupplierByName(r.supplier) : null;
+  const td = r ? (r.termDays!=null ? r.termDays : termDaysOf(sup)) : 30;
+  const header = `
+    <div class="form-grid">
+      <div class="form-field"><label>Bill / Reference No.</label><input id="f-num" class="form-input" value="${r?escapeAttr(r.num):''}" placeholder="Creditor's invoice or bill number"></div>
+      <div class="form-field"><label>Bill date</label><input id="f-date" type="date" class="form-input" value="${r?r.date:todayISO()}"></div>
+    </div>
+    <div class="form-grid">
+      <div class="form-field"><label>Creditor (supplier) — pick one or type a new name</label>
+        <input id="ob-supplier" class="form-input" list="ob-suppliers" autocomplete="off" value="${r?escapeAttr(r.supplier):''}" placeholder="e.g. ABC Secretarial Services, XYZ Transport"
+          oninput="obSupplierPicked()"><datalist id="ob-suppliers">${suppliers.map(x=>`<option value="${escapeAttr(x.name)}">`).join('')}</datalist></div>
+      <div class="form-field"><label>Payment terms (days, 0 = pay now)</label><input id="ob-termdays" type="number" min="0" step="1" class="form-input" value="${td}"></div>
+    </div>
+    <div class="form-field full"><label>Expense account (what is this bill for?) — type to search</label>
+      ${comboHTML('ob-acct', accts, r?r.expenseAcct:'', 'e.g. 6700 Professional fees, 6400 Transport…')}
+    </div>`;
+  document.getElementById('content').innerHTML = docFormShell(r?'Edit Other Creditor Bill':'New Other Creditor Bill','pi', header, `saveOtherBill(${editIdx==null?'null':editIdx})`, r?'Save Changes':'Save Bill');
+  document.getElementById('page-title').textContent = r ? 'Edit Other Creditor Bill' : 'New Other Creditor Bill';
+  document.getElementById('page-sub').textContent = 'Procurement · Bills that are not stock purchases';
+  recalcFormTotal();
+}
+function obSupplierPicked(){
+  const sup = lookupSupplierByName(document.getElementById('ob-supplier').value.trim());
+  if(sup){ const td = document.getElementById('ob-termdays'); if(td) td.value = termDaysOf(sup); }
+}
+function saveOtherBill(editIdx){
+  const r = (editIdx!=null) ? piRows[editIdx] : null;
+  const num = document.getElementById('f-num').value.trim();
+  const supplier = document.getElementById('ob-supplier').value.trim();
+  const date = document.getElementById('f-date').value;
+  const acct = document.getElementById('ob-acct').value;
+  const termDays = Math.max(0, parseInt(document.getElementById('ob-termdays').value,10)||0);
+  if(!num){ alert("Please enter the creditor's bill / reference number."); return; }
+  if(!supplier){ alert('Please enter the creditor (supplier) name.'); return; }
+  if(!date){ alert('Please choose the bill date.'); return; }
+  if(!acct){ alert('Please choose the expense account (search and pick one).'); return; }
+  if(piRows.some((x,j)=>j!==editIdx && x.num===num && x.supplier===supplier)){ alert(`Bill "${num}" from this creditor has already been entered.`); return; }
+  const items = currentFormItems.filter(it=>it.desc.trim()!=='' && it.qty>0);
+  if(items.length===0){ alert('Please add at least one line (description and amount).'); return; }
+  const amt = Math.round(items.reduce((t,it)=>t+it.qty*it.price,0)*100)/100;
+  if(amt<=0){ alert('Please enter the amount.'); return; }
+  if(!lookupSupplierByName(supplier)){
+    const nums = suppliers.map(x=>parseInt(String(x.id).replace(/\D/g,''),10)||0);
+    suppliers.push({id:'SUPP-'+String(Math.max(0,...nums)+1).padStart(3,'0'), name:supplier, addr:[], attn:'', phone:'', email:'', terms:termDays>0?`${termDays} Days`:'COD', termDays, agent:''});
+  }
+  if(r){
+    if(r.num!==num) { purchaseNotes.forEach(n=>{ if(n.refPI===r.num) n.refPI = num; }); pvRows.forEach(v=>{ (v.allocations||[]).forEach(a=>{ if(a.pi===r.num) a.pi = num; }); if(v.refPI) v.refPI = v.refPI.split(', ').map(x=>x===r.num?num:x).join(', '); }); }
+    piRows[editIdx] = {...r, num, supplier, date, amt, itemsFull:items, expenseAcct:acct, termDays};
+    recalcStatus(piRows[editIdx],'pi');
+  } else {
+    piRows.unshift({num, supplier, date, amt, status:'Open', paidAmt:0, itemsFull:items, addr:[], expenseAcct:acct, termDays});
+  }
+  render('pi');
+}
+
 // ---------- Purchase Invoice: edit / delete ----------
 function clearAllPI(){
   if(piRows.length===0) return;
@@ -1848,7 +1911,7 @@ function glPostings(){
     add(`${n.type}:${n.num}:2`, n.date, cn?ACC.ar:ACC.sales, 0, n.amt, `${cn?'Credit':'Debit'} note — ${n.client}`, n.num, cn?'Credit Note':'Debit Note');
   });
   piRows.filter(pi=>inBooks(pi.date)).forEach(pi=>{
-    add(`PI:${pi.num}:1`, pi.date, ACC.cogs, pi.amt, 0, `Purchase — ${pi.supplier}`, pi.num, 'Purchase Invoice');
+    add(`PI:${pi.num}:1`, pi.date, pi.expenseAcct||ACC.cogs, pi.amt, 0, `Purchase — ${pi.supplier}`, pi.num, 'Purchase Invoice');
     add(`PI:${pi.num}:2`, pi.date, ACC.ap, 0, pi.amt, `Purchase — ${pi.supplier}`, pi.num, 'Purchase Invoice');
   });
   orRows.filter(o=>inBooks(o.date)).forEach(o=>{
@@ -1857,8 +1920,8 @@ function glPostings(){
   });
   purchaseNotes.filter(n=>inBooks(n.date)).forEach(n=>{
     const cn = n.type==='CN';
-    add(`P${n.type}:${n.num}:1`, n.date, cn?ACC.ap:ACC.cogs, n.amt, 0, `${cn?'Credit':'Debit'} note — ${n.supplier}`, n.num, cn?'Purchase Credit Note':'Purchase Debit Note');
-    add(`P${n.type}:${n.num}:2`, n.date, cn?ACC.cogs:ACC.ap, 0, n.amt, `${cn?'Credit':'Debit'} note — ${n.supplier}`, n.num, cn?'Purchase Credit Note':'Purchase Debit Note');
+    add(`P${n.type}:${n.num}:1`, n.date, cn?ACC.ap:piCostAcct(n.refPI), n.amt, 0, `${cn?'Credit':'Debit'} note — ${n.supplier}`, n.num, cn?'Purchase Credit Note':'Purchase Debit Note');
+    add(`P${n.type}:${n.num}:2`, n.date, cn?piCostAcct(n.refPI):ACC.ap, 0, n.amt, `${cn?'Credit':'Debit'} note — ${n.supplier}`, n.num, cn?'Purchase Credit Note':'Purchase Debit Note');
   });
   pvRows.filter(v=>inBooks(v.date)).forEach(v=>{
     add(`PV:${v.num}:1`, v.date, ACC.ap, v.amt, 0, `Payment — ${v.supplier}`, v.num, 'Payment', v.chqNo, v.supplier);
@@ -5744,18 +5807,19 @@ const views = {
       <div class="panel">
         <div class="panel-head">
           <p class="panel-title">Purchase Invoice</p>
-          <button class="pdf-btn danger-btn" onclick="clearAllPI()">Delete All</button>
+          <div class="head-actions"><button class="new-btn" onclick="openOtherBillForm()">+ Other Creditor Bill</button>
+          <button class="pdf-btn danger-btn" onclick="clearAllPI()">Delete All</button></div>
         </div>
         <table>
           <thead><tr><th>PI Number</th><th>Supplier</th><th>Date</th><th>Due</th><th>Amount (RM)</th><th>Outstanding (RM)</th><th>Status</th><th>PV Ref</th><th></th></tr></thead>
           <tbody>
             ${piRows.map((r,i)=>`
               <tr>
-                <td class="cell-dim">${r.num}</td><td class="cell-strong">${r.supplier}</td><td class="cell-dim">${fmtDate(r.date)}</td><td class="cell-dim">${fmtDate(isoOf(dueDateOf(r,'pi')))}</td><td>${fmt(r.amt)}</td><td>${fmt(outstandingOf(r,'pi'))}</td><td>${statusBadge(displayStatus(r,'pi'))}</td>
+                <td class="cell-dim">${r.num}${isOtherBill(r)?`<br><span class="cell-dim" style="font-size:11px">Other bill · ${escapeHtml(accountLabel(r.expenseAcct))}</span>`:''}</td><td class="cell-strong">${r.supplier}</td><td class="cell-dim">${fmtDate(r.date)}</td><td class="cell-dim">${fmtDate(isoOf(dueDateOf(r,'pi')))}</td><td>${fmt(r.amt)}</td><td>${fmt(outstandingOf(r,'pi'))}</td><td>${statusBadge(displayStatus(r,'pi'))}</td>
                 <td class="cell-dim">${piPVs(r).join('<br>')||'-'}</td>
                 <td class="row-actions">
-                  <button class="pdf-btn" onclick="downloadPIPDF(${i})">PDF</button>
-                  <button class="pdf-btn" onclick="openPIEditForm(${i})">Edit</button>
+                  ${isOtherBill(r)?'':`<button class="pdf-btn" onclick="downloadPIPDF(${i})">PDF</button>`}
+                  <button class="pdf-btn" onclick="${isOtherBill(r)?`openOtherBillForm(${i})`:`openPIEditForm(${i})`}">Edit</button>
                   <button class="pdf-btn" onclick="openPurchaseNoteForm(${i},'CN')">CN</button>
                   <button class="pdf-btn" onclick="openPurchaseNoteForm(${i},'DN')">DN</button>
                   <button class="pdf-btn danger-btn" onclick="deletePIRow(${i})">Delete</button>
