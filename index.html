@@ -6188,6 +6188,35 @@ function flowFollowMoved(view){
     card.style.boxShadow = '0 0 0 2px var(--gold)'; setTimeout(()=>{ card.style.boxShadow=''; }, 2500);
   }catch(e){}
 }
+// ---- Search box for every document list (Quotation, SO, DO, Invoice, PO, GR, PI, notes, OR, PV ...) ----
+const LIST_SEARCH_VIEWS = ['quotation','proforma','so','do','invoice','salesNotes','po','gr','pi','purchaseNotes','or','pv'];
+const listQ = {};
+function listSearchApply(view){
+  const box = document.getElementById('list-search-count');
+  const rows = [...document.querySelectorAll('#content .panel tbody tr')].filter(tr=>!(tr.children.length===1 && tr.children[0].colSpan>1));
+  const q = (listQ[view]||'').trim().toLowerCase();
+  const toks = q ? q.split(/\s+/) : [];
+  let shown = 0;
+  rows.forEach(tr=>{
+    if(tr.dataset.emptyRow) return;
+    const hay = tr.textContent.replace(/\s+/g,' ').toLowerCase();
+    const ok = toks.every(t=>hay.includes(t));
+    tr.style.display = ok ? '' : 'none'; if(ok) shown++;
+  });
+  if(box) box.textContent = toks.length ? `${shown} of ${rows.length} shown` : `${rows.length} record(s)`;
+}
+function listSearchInput(view, v){ listQ[view] = v; listSearchApply(view); }
+function addListSearch(view){
+  if(!LIST_SEARCH_VIEWS.includes(view)) return;
+  const panel = document.querySelector('#content .panel');
+  if(!panel || !panel.querySelector('table')) return;
+  const head = panel.querySelector('.panel-head');
+  const bar = document.createElement('div');
+  bar.className = 'form-body'; bar.style.cssText = 'padding:12px 18px 8px';
+  bar.innerHTML = `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><input id="list-search" class="form-input" style="max-width:360px;flex:1;min-width:200px" placeholder="Search number, name, date, amount, status…" value="${escapeAttr(listQ[view]||'')}" oninput="listSearchInput('${view}',this.value)"><span class="section-note" id="list-search-count"></span></div>`;
+  if(head) head.insertAdjacentElement('afterend', bar); else panel.insertBefore(bar, panel.firstChild);
+  listSearchApply(view);
+}
 function render(view){
   currentView = view;
   document.getElementById('content').innerHTML = views[view]();
@@ -6197,6 +6226,7 @@ function render(view){
   document.querySelectorAll('.nav-item').forEach(el=>{
     el.classList.toggle('active', el.dataset.view===view);
   });
+  addListSearch(view);
   flowFollowMoved(view);
   updateNavBadges();
   cloudQueue();
