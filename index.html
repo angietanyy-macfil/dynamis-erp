@@ -3907,17 +3907,25 @@ function renderFlowBoard(){
 }
 
 // ---------- Customers: list + form + detail ----------
-function renderCustomerList(){
-  return `
-    <div class="panel">
-      <div class="panel-head">
-        <p class="panel-title">Customers</p>
-        <button class="new-btn" onclick="openCustomerForm()">+ New Customer</button>
-      </div>
-      <table>
-        <thead><tr><th>Company Name</th><th>Attn</th><th>Payment Term</th><th>Payment Policy</th><th>Agent</th><th>Credit Limit (RM)</th><th></th></tr></thead>
-        <tbody>
-          ${customers.map((c,i)=>`
+// ---- Master data lists: A–Z order + search ----
+let mdQ = {customers:'', suppliers:'', soa:''};
+function mdSortedIdx(arr, nameOf){ return arr.map((x,i)=>i).sort((a,b)=> String(nameOf(arr[a])).localeCompare(String(nameOf(arr[b])), undefined, {sensitivity:'base', numeric:true})); }
+function mdMatch(q, parts){ q=q.trim().toLowerCase(); if(!q) return true; const hay=parts.filter(Boolean).join(' ').toLowerCase(); return q.split(/\s+/).every(t=>hay.includes(t)); }
+function mdSearch(kind, v){
+  mdQ[kind]=v;
+  const tb=document.getElementById('md-tbody'), ct=document.getElementById('md-count');
+  if(!tb) return;
+  const r = kind==='customers' ? customerRowsHTML() : kind==='suppliers' ? supplierRowsHTML() : soaRowsHTML();
+  tb.innerHTML = r.html; if(ct) ct.textContent = r.shown===r.total ? r.total+' record(s) · A–Z' : r.shown+' of '+r.total+' · A–Z';
+}
+function mdSearchBar(kind, r, placeholder){
+  return `<div class="form-body" style="padding-bottom:6px"><div class="form-grid"><div class="form-field"><label>Search</label>
+    <input class="form-input" value="${escapeAttr(mdQ[kind])}" oninput="mdSearch('${kind}',this.value)" placeholder="${placeholder}"></div>
+    <div class="form-field"><label>&nbsp;</label><div class="section-note" style="padding:10px 0" id="md-count">${r.shown===r.total ? r.total+' record(s) · A–Z' : r.shown+' of '+r.total+' · A–Z'}</div></div></div></div>`;
+}
+function customerRowsHTML(){
+  const idx = mdSortedIdx(customers, c=>c.name).filter(i=>{ const c=customers[i]; return mdMatch(mdQ.customers, [c.name,c.attn,c.phone,c.email,c.agent,c.terms,c.paymentPolicy,(c.addr||[]).join(' ')]); });
+  const html = idx.map(i=>{ const c=customers[i]; return `
             <tr>
               <td class="cell-strong">${c.name}</td>
               <td class="cell-dim">${c.attn||'-'}</td>
@@ -3930,173 +3938,52 @@ function renderCustomerList(){
                 <button class="pdf-btn" onclick="editCustomer(${i})">Edit</button>
                 <button class="pdf-btn danger-btn" onclick="deleteCustomerRow(${i})">Delete</button>
               </td>
-            </tr>`).join('')}
-        </tbody>
+            </tr>`; }).join('') || '<tr><td colspan="7" class="cell-dim">No customer found.</td></tr>';
+  return {html, shown:idx.length, total:customers.length};
+}
+function renderCustomerList(){
+  const r = customerRowsHTML();
+  return `
+    <div class="panel">
+      <div class="panel-head">
+        <p class="panel-title">Customers</p>
+        <button class="new-btn" onclick="openCustomerForm()">+ New Customer</button>
+      </div>
+      ${mdSearchBar('customers', r, 'Name, attn, phone, agent, address…')}
+      <table>
+        <thead><tr><th>Company Name</th><th>Attn</th><th>Payment Term</th><th>Payment Policy</th><th>Agent</th><th>Credit Limit (RM)</th><th></th></tr></thead>
+        <tbody id="md-tbody">${r.html}</tbody>
       </table>
     </div>`;
 }
-function deleteCustomerRow(i){
-  if(!confirm(`Delete customer "${customers[i].name}"?`)) return;
-  customers.splice(i,1);
-  render('customers');
+function supplierRowsHTML(){
+  const idx = mdSortedIdx(suppliers, x=>x.name).filter(i=>{ const x=suppliers[i]; return mdMatch(mdQ.suppliers, [x.name,x.attn,x.phone,x.email,x.agent,x.terms,(x.addr||[]).join(' ')]); });
+  const html = idx.map(i=>{ const x=suppliers[i]; return `
+            <tr>
+              <td class="cell-strong">${x.name}</td>
+              <td class="cell-dim">${x.attn||'-'}</td>
+              <td class="cell-dim">${x.terms||'-'}</td>
+              <td class="cell-dim">${x.agent||'-'}</td>
+              <td class="row-actions">
+                <button class="pdf-btn" onclick="viewSupplier(${i})">View</button>
+                <button class="pdf-btn" onclick="editSupplier(${i})">Edit</button>
+                <button class="pdf-btn danger-btn" onclick="deleteSupplierRow(${i})">Delete</button>
+              </td>
+            </tr>`; }).join('') || '<tr><td colspan="5" class="cell-dim">No supplier found.</td></tr>';
+  return {html, shown:idx.length, total:suppliers.length};
 }
-function customerFormHTML(existing){
-  const c = existing || {name:'',addr:[],deliveryAddr:[],attn:'',phone:'',email:'',terms:'30 Days',agent:'',creditLimit:0,paymentPolicy:'Credit Term',buyerTin:'',buyerRegNo:''};
-  const policy = c.paymentPolicy || 'Credit Term';
-  return `
-    <div class="panel">
-      <div class="panel-head">
-        <p class="panel-title">${existing?'Edit Customer':'New Customer'}</p>
-        <span class="view-all" onclick="render('customers')">← Back to list</span>
-      </div>
-      <div class="form-body">
-        <div class="form-field full"><label>Company Name</label><input id="c-name" class="form-input" value="${c.name}" placeholder="Customer company name"></div>
-        <div class="form-field full"><label>Address (billing)</label><textarea id="c-addr" class="form-input" rows="3" placeholder="One line per address line">${(c.addr||[]).join('\n')}</textarea></div>
-        <div class="form-field full"><label>Delivery Address <span class="cell-dim" style="font-weight:400">(leave blank if same as billing address)</span></label><textarea id="c-delivery-addr" class="form-input" rows="3" placeholder="One line per address line">${(c.deliveryAddr||[]).join('\n')}</textarea></div>
-        <div class="form-grid three">
-          <div class="form-field"><label>Attn / Contact</label><input id="c-attn" class="form-input" value="${c.attn||''}" placeholder="Contact person @ phone"></div>
-          <div class="form-field"><label>Phone</label><input id="c-phone" class="form-input" value="${c.phone||''}"></div>
-          <div class="form-field"><label>Email</label><input id="c-email" class="form-input" value="${c.email||''}"></div>
-        </div>
-        <div class="form-grid three">
-          <div class="form-field"><label>Agent (person in charge)</label><input id="c-agent" class="form-input" value="${c.agent||''}" placeholder="e.g. Yap CS"></div>
-          <div class="form-field"><label>Credit Limit (RM)</label><input id="c-limit" type="number" class="form-input" value="${c.creditLimit||0}"></div>
-          <div></div>
-        </div>
-        <div class="form-grid">
-          <div class="form-field">
-            <label>Payment Policy (gates Sales Flow)</label>
-            <select id="c-policy" class="form-input" onchange="onPolicyChange()">
-              <option value="Credit Term" ${policy==='Credit Term'?'selected':''}>Credit Term — no gate, proceed normally</option>
-              <option value="Deposit Required" ${policy==='Deposit Required'?'selected':''}>Deposit Required — must record a deposit before proceeding to PO</option>
-              <option value="Cash Before Delivery" ${policy==='Cash Before Delivery'?'selected':''}>Cash Before Delivery — must be paid in full before DO &amp; Invoice</option>
-            </select>
-          </div>
-          <div class="form-field" id="c-termdays-wrap" style="${policy==='Cash Before Delivery'?'display:none;':''}">
-            <label id="c-termdays-label">${policy==='Deposit Required'?'Credit term for the balance (days)':'Credit term (days)'}</label>
-            <input id="c-termdays" type="number" min="0" class="form-input" value="${termDaysOf(c)}" placeholder="e.g. 60">
-          </div>
-        </div>
-        <label class="section-label">e-Invoice details (for LHDN / MyInvois, when applicable)</label>
-        <div class="form-grid">
-          <div class="form-field"><label>Buyer TIN</label><input id="c-tin" class="form-input" value="${c.buyerTin||''}" placeholder="e.g. C1234567890"></div>
-          <div class="form-field"><label>Business Registration No.</label><input id="c-regno" class="form-input" value="${c.buyerRegNo||''}" placeholder="SSM registration number"></div>
-        </div>
-        <div class="form-actions">
-          <button class="save-btn" onclick="saveCustomer()">Save Customer</button>
-          <button class="cancel-btn" onclick="render('customers')">Cancel</button>
-        </div>
-      </div>
-    </div>`;
-}
-function openCustomerForm(){
-  editingCustomerIndex = null;
-  document.getElementById('content').innerHTML = customerFormHTML(null);
-  document.getElementById('page-title').textContent = 'New Customer';
-  document.getElementById('page-sub').textContent = 'Master Data · Create customer';
-}
-function editCustomer(i){
-  editingCustomerIndex = i;
-  document.getElementById('content').innerHTML = customerFormHTML(customers[i]);
-  document.getElementById('page-title').textContent = 'Edit Customer';
-  document.getElementById('page-sub').textContent = 'Master Data · Edit customer';
-}
-function onPolicyChange(){
-  const pol = document.getElementById('c-policy').value;
-  document.getElementById('c-termdays-wrap').style.display = pol==='Cash Before Delivery' ? 'none' : '';
-  document.getElementById('c-termdays-label').textContent = pol==='Deposit Required' ? 'Credit term for the balance (days)' : 'Credit term (days)';
-}
-function saveCustomer(){
-  const name = document.getElementById('c-name').value.trim();
-  if(!name){ alert('Please enter the company name.'); return; }
-  const addr = document.getElementById('c-addr').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const deliveryAddr = document.getElementById('c-delivery-addr').value.split('\n').map(s=>s.trim()).filter(Boolean);
-  const attn = document.getElementById('c-attn').value;
-  const phone = document.getElementById('c-phone').value;
-  const email = document.getElementById('c-email').value;
-  const agent = document.getElementById('c-agent').value;
-  const creditLimit = parseFloat(document.getElementById('c-limit').value)||0;
-  const paymentPolicy = document.getElementById('c-policy').value;
-  const termDays = paymentPolicy==='Cash Before Delivery' ? 0 : (parseInt(document.getElementById('c-termdays').value,10)||0);
-  if(paymentPolicy==='Credit Term' && termDays<=0){ alert('Please enter the credit term in days (e.g. 30, 60).'); return; }
-  const terms = termDays>0 ? `${termDays} Days` : 'COD';
-  const buyerTin = document.getElementById('c-tin').value;
-  const buyerRegNo = document.getElementById('c-regno').value;
-
-  if(editingCustomerIndex!==null){
-    const id = customers[editingCustomerIndex].id;
-    customers[editingCustomerIndex] = {id, name, addr, deliveryAddr, attn, phone, email, terms, termDays, agent, creditLimit, paymentPolicy, buyerTin, buyerRegNo};
-  } else {
-    const id = 'CUST-' + String(customers.length+1).padStart(3,'0');
-    customers.push({id, name, addr, deliveryAddr, attn, phone, email, terms, termDays, agent, creditLimit, paymentPolicy, buyerTin, buyerRegNo});
-  }
-  render('customers');
-}
-function renderCustomerDetail(i){
-  const c = customers[i];
-  const related = quoteRows.filter(q=>q.client===c.name);
-  return `
-    <div class="panel">
-      <div class="panel-head">
-        <p class="panel-title">${c.name}</p>
-        <div class="head-actions">
-          <span class="view-all" onclick="editCustomer(${i})">Edit</span>
-          <span class="view-all" onclick="render('customers')">← Back to list</span>
-        </div>
-      </div>
-      <div class="form-body">
-        <div class="form-grid three">
-          <div class="form-field"><label>Attn / Contact</label><div class="form-static">${c.attn||'-'}</div></div>
-          <div class="form-field"><label>Phone</label><div class="form-static">${c.phone||'-'}</div></div>
-          <div class="form-field"><label>Email</label><div class="form-static">${c.email||'-'}</div></div>
-        </div>
-        <div class="form-grid three">
-          <div class="form-field"><label>Payment Term</label><div class="form-static">${c.terms||'-'}</div></div>
-          <div class="form-field"><label>Agent (person in charge)</label><div class="form-static">${c.agent||'-'}</div></div>
-          <div class="form-field"><label>Credit Limit</label><div class="form-static">RM ${fmt(c.creditLimit||0)}</div></div>
-        </div>
-        <div class="form-field full"><label>Payment Policy</label><div class="form-static">${c.paymentPolicy||'Credit Term'}</div></div>
-        <div class="form-grid">
-          <div class="form-field"><label>Buyer TIN</label><div class="form-static">${c.buyerTin||'-'}</div></div>
-          <div class="form-field"><label>Business Registration No.</label><div class="form-static">${c.buyerRegNo||'-'}</div></div>
-        </div>
-        <div class="form-field full"><label>Address</label><div class="form-static">${(c.addr||[]).join('\n')||'-'}</div></div>
-      </div>
-    </div>
-    ${tableView('Quotations for this customer', ['Quote No.','Date','Amount (RM)','Status'], related, r=>`
-      <tr><td class="cell-dim">${r.num}</td><td class="cell-dim">${fmtDate(r.date)}</td><td>${fmt(r.amt)}</td><td>${statusBadge(r.status)}</td></tr>`)}
-  `;
-}
-function viewCustomer(i){
-  document.getElementById('content').innerHTML = renderCustomerDetail(i);
-  document.getElementById('page-title').textContent = customers[i].name;
-  document.getElementById('page-sub').textContent = 'Master Data · Customer profile';
-}
-
-// ---------- Suppliers: list + form + detail ----------
 function renderSupplierList(){
+  const r = supplierRowsHTML();
   return `
     <div class="panel">
       <div class="panel-head">
         <p class="panel-title">Suppliers</p>
         <button class="new-btn" onclick="openSupplierForm()">+ New Supplier</button>
       </div>
+      ${mdSearchBar('suppliers', r, 'Name, attn, phone, agent, address…')}
       <table>
         <thead><tr><th>Company Name</th><th>Attn</th><th>Payment Term</th><th>Agent</th><th></th></tr></thead>
-        <tbody>
-          ${suppliers.map((s,i)=>`
-            <tr>
-              <td class="cell-strong">${s.name}</td>
-              <td class="cell-dim">${s.attn||'-'}</td>
-              <td class="cell-dim">${s.terms||'-'}</td>
-              <td class="cell-dim">${s.agent||'-'}</td>
-              <td class="row-actions">
-                <button class="pdf-btn" onclick="viewSupplier(${i})">View</button>
-                <button class="pdf-btn" onclick="editSupplier(${i})">Edit</button>
-                <button class="pdf-btn danger-btn" onclick="deleteSupplierRow(${i})">Delete</button>
-              </td>
-            </tr>`).join('')}
-        </tbody>
+        <tbody id="md-tbody">${r.html}</tbody>
       </table>
     </div>`;
 }
@@ -5468,6 +5355,17 @@ function pdfStampSOAMonthGrid(doc, left, right, buckets, older){
     doc.text(`Older than 10 months: RM ${fmt2(older)}`, right, H-21.5, {align:'right'});
   }
 }
+function soaRowsHTML(){
+  const rows = buildSOARows();
+  const idx = mdSortedIdx(rows, r=>r.client).filter(i=>mdMatch(mdQ.soa,[rows[i].client]));
+  const html = idx.map(i=>{ const r=rows[i]; return `
+              <tr>
+                <td class="cell-strong">${r.client}${soaSettings[r.client]?`<div class="cell-dim" style="font-weight:400">Custom: as at ${fmtDate(soaSettings[r.client].asAt)}${soaSettings[r.client].showPaid?'':' · paid hidden'}${soaSettings[r.client].remarks?' · remarks':''}</div>`:''}</td><td class="cell-dim">${r.invoices}</td><td>${fmt2(r.outstanding)}</td>
+                <td class="${r.overdue>0?'alloc-od':'cell-dim'}">${r.overdue>0?fmt2(r.overdue):'-'}</td>
+                <td class="row-actions"><button class="pdf-btn" onclick="downloadSOAPDF(${i})">PDF</button><button class="pdf-btn" onclick="openSOAEditForm(${i})">Edit</button></td>
+              </tr>`; }).join('') || '<tr><td colspan="5" class="cell-dim">No customer found.</td></tr>';
+  return {html, shown:idx.length, total:rows.length};
+}
 function openSOAEditForm(idx){
   const row = buildSOARows()[idx]; if(!row) return;
   const o = soaOpts(row.client);
@@ -5952,20 +5850,14 @@ const views = {
       </div>`;
   },
   soa(){
-    const rows = buildSOARows();
+    const r = soaRowsHTML();
     return `
       <div class="panel">
         <div class="panel-head"><p class="panel-title">Statement of Account — as at ${fmtDate(todayISO())}</p></div>
+        ${mdSearchBar('soa', r, 'Customer name…')}
         <table>
           <thead><tr><th>Customer</th><th>Invoices</th><th>Outstanding (RM)</th><th>Overdue (RM)</th><th></th></tr></thead>
-          <tbody>
-            ${rows.map((r,i)=>`
-              <tr>
-                <td class="cell-strong">${r.client}${soaSettings[r.client]?`<div class="cell-dim" style="font-weight:400">Custom: as at ${fmtDate(soaSettings[r.client].asAt)}${soaSettings[r.client].showPaid?'':' · paid hidden'}${soaSettings[r.client].remarks?' · remarks':''}</div>`:''}</td><td class="cell-dim">${r.invoices}</td><td>${fmt2(r.outstanding)}</td>
-                <td class="${r.overdue>0?'alloc-od':'cell-dim'}">${r.overdue>0?fmt2(r.overdue):'-'}</td>
-                <td class="row-actions"><button class="pdf-btn" onclick="downloadSOAPDF(${i})">PDF</button><button class="pdf-btn" onclick="openSOAEditForm(${i})">Edit</button></td>
-              </tr>`).join('') || '<tr><td colspan="5" class="cell-dim">No invoices yet.</td></tr>'}
-          </tbody>
+          <tbody id="md-tbody">${r.html}</tbody>
         </table>
       </div>`;
   },
